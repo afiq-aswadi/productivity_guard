@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Virtual Environment
+bin/
+include/
+lib/
+lib64/
+share/
+pyvenv.cfg
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+.env
+debug_screenshots/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST

@@ -1,0 +1,10 @@
+/Users/neelnanda/Code/neels-utils
+Pillow==10.2.0
+python-dotenv==1.0.1
+mss
+numpy
+easyocr  # Optional: for OCR functionality
+pytesseract  # Optional: alternative OCR if easyocr not available
+
+# Testing dependencies
+coverage  # For test coverage reports 
