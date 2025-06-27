@@ -1,3 +1,5 @@
+**Warning:** 99% written by Claude Code, use at your own risk
+
 # ProductivityGuard
 
 A Python application that helps keep you focused by monitoring your screen for procrastination using Gemini AI. The app takes periodic screenshots, analyzes them for signs of procrastination, and initiates motivational conversations when you get distracted.
