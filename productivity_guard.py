@@ -35,45 +35,35 @@ if OCR_AVAILABLE:
 else:
     print("OCR not available")
 
+def load_prompt(filename):
+    """Load a prompt from the prompts directory."""
+    prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', filename)
+    try:
+        with open(prompt_path, 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print(f"Warning: Prompt file {filename} not found in prompts/ directory")
+        return ""
+
+# Load prompts from files
+detection_prompt = load_prompt('detection_prompt.md')
+intervention_prompt = load_prompt('intervention_prompt.md')
+
+# Add OCR note if available
 ocr_note = (
     "\n\nNote: Text content from the screens has been extracted using OCR and will be provided separately to help with analysis. If there is no text content, ignore this note."
     if OCR_AVAILABLE
     else ""
 )
 
-SYSTEM_PROMPT = f"""Analyze these screenshots and determine if the person is procrastinating. 
+# Update detection prompt with OCR note if needed
+if OCR_AVAILABLE and ocr_note not in detection_prompt:
+    detection_prompt = detection_prompt.replace(
+        "IMPORTANT: These screenshots are from TWO MONITORS for the same user, so consider them together.",
+        f"IMPORTANT: These screenshots are from TWO MONITORS for the same user, so consider them together.{ocr_note}"
+    )
 
-IMPORTANT: These screenshots are from TWO MONITORS for the same user, so consider them together.{ocr_note}
-
-Consider:
-- Work-related tools (IDEs, terminals, documentation) are NOT procrastination
-- Brief searches related to work are NOT procrastination
-- Social media, entertainment, or non-work content IS procrastination
-- Multiple non-work tabs/windows suggest procrastination
-- The overall context of what's visible
-
-Allowed activities:
-- Focusmate video calls
-- Google Meet video calls
-- Work-related browsing and applications
-- Spotify
-- Deliveroo
-- Uber
-- Uber Eats
-
-NOT allowed activities:
-- Email applications
-- Slack or other messaging apps
-- LessWrong website
-- EA Forum website
-- YouTube
-- Reddit
-- TikTok
-- Instagram
-- Facebook
-- Twitter
-
-When analyzing articles or reading material, err on the side of asking if it's work-related. Use your judgment to determine if other activities are productive."""
+SYSTEM_PROMPT = detection_prompt
 
 # Load environment variables
 load_dotenv(find_dotenv())
@@ -89,7 +79,7 @@ class ProductivityGuard:
             self.interval = 10  # Override interval in debug mode
 
         # Initialize LLMClient with OpenRouter (default)
-        self.client = LLMClient()
+        self.client = LLMClient(app_name="productivity-guard")
         self.debug = debug
         self.sct = mss()  # Initialize screen capture tool
 
@@ -351,7 +341,7 @@ class ProductivityGuard:
                 model=model_name,
                 system=system_msg,
                 images=images if images else None,
-                reasoning=use_reasoning and "pro" in model_name.lower(),
+                reasoning=use_reasoning and ("pro" in model_name.lower() or "reasoning" in model_name.lower() or "thinking" in model_name.lower()),
                 include_reasoning=False  # We don't need reasoning tokens in response
             )
 
@@ -541,7 +531,7 @@ class ProductivityGuard:
                 response_data = self.client.chat(
                     conversation_text.strip(),
                     model=pro_model,
-                    system="You are a productivity coach helping someone who is procrastinating. Be encouraging but firm. Your goal is to help them get back to work.",
+                    system=intervention_prompt,
                     reasoning=True,
                     include_reasoning=False
                 )

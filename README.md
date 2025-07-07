@@ -1,218 +1,125 @@
 # ProductivityGuard
 
-A Python application that helps keep you focused by monitoring your screen for procrastination using Gemini AI. The app takes periodic screenshots, analyzes them for signs of procrastination, and initiates motivational conversations when you get distracted.
+A friendly AI assistant that helps you stay focused by monitoring your screen for procrastination. When it detects you're getting distracted, it starts a supportive conversation to help you get back on track.
 
-## Features
+**Note:** This tool is primarily designed for macOS but should work on other platforms.
 
-- **Smart Procrastination Detection**: Two-stage detection using Gemini Flash for quick checks and Gemini Pro with reasoning for detailed analysis
-- **Multi-Monitor Support**: Captures and analyzes all connected displays
-- **Productivity Exceptions**: Add exceptions for legitimate activities (e.g., "x reading documentation for work")
-- **OCR Support**: Extracts text from screenshots using EasyOCR or PyTesseract for better content analysis
-- **Interactive Interventions**: Engages in motivational conversations when procrastination is detected
-- **Debug Mode**: Save screenshots and detailed logs for troubleshooting
-- **Configurable Settings**: Customize check intervals and detection sensitivity
+## What Does It Do?
 
-## Requirements
+ProductivityGuard takes periodic screenshots of your screens and uses Google's Gemini AI to check if you're procrastinating. If it detects distraction (social media, entertainment sites, etc.), it will:
 
-- Python 3.8 or higher
-- macOS, Windows, or Linux
-- OpenRouter API key (for Gemini access)
-- Optional: EasyOCR or PyTesseract for text extraction
+1. Play a notification sound
+2. Bring the terminal window to the front
+3. Start a motivational conversation to help you refocus
 
-## Installation
+## Quick Start
 
-1. Clone this repository:
-   ```bash
-   git clone [repository-url]
-   cd productivity_guard
-   ```
+### 1. Get an OpenRouter Account
 
-2. Create and activate a virtual environment:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+This app uses OpenRouter to access Google's Gemini AI models. You'll need to:
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+1. Sign up at [OpenRouter.ai](https://openrouter.ai)
+2. Add credit to your account (recommended: $10 to start)
+3. Get your API key from the [Keys page](https://openrouter.ai/settings/keys)
 
-4. Create a `.env` file in the project root:
-   ```
-   OPENROUTER_API_KEY=your_api_key_here
-   OPENROUTER_APP_NAME=productivity-guard
-   ```
+**Cost estimate:** Each check costs approximately $0.001-0.002, so $10 should last for thousands of checks.
 
-5. (Optional) Install OCR support:
-   ```bash
-   # For EasyOCR (recommended, but larger download)
-   pip install easyocr
-   
-   # For PyTesseract (requires system installation)
-   # macOS: brew install tesseract
-   # Ubuntu: sudo apt-get install tesseract-ocr
-   # Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
-   pip install pytesseract
-   ```
+### 2. Install ProductivityGuard
 
-## Usage
+```bash
+# Clone the repository
+git clone https://github.com/[your-username]/productivity_guard.git
+cd productivity_guard
 
-### Basic Usage
+# Create a virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-Start the productivity monitor:
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 3. Set Up Your API Key
+
+Create a `.env` file in the project directory:
+
+```bash
+echo "OPENROUTER_API_KEY=your_api_key_here" > .env
+echo "OPENROUTER_APP_NAME=productivity-guard" >> .env
+```
+
+Replace `your_api_key_here` with your actual OpenRouter API key.
+
+### 4. Run the App
+
 ```bash
 python productivity_guard.py
 ```
 
-The app will:
-1. Take screenshots every 30 seconds (default)
-2. Analyze them for signs of procrastination
-3. Start a conversation if procrastination is detected
-4. Continue monitoring after the conversation ends
+That's it! The app will start monitoring your screens every 30 seconds.
 
-### Commands During Monitoring
+## Customizing What's Allowed
 
-While the app is running, you can type:
-- `x <description>` - Add a productivity exception (e.g., `x reading Python documentation`)
-- `q` or `quit` - Stop monitoring and exit
-- `status` - Show current monitoring status
+The app comes with default rules about what's considered procrastination. You can customize these by editing the prompt files in the `prompts/` directory:
 
-### Commands During Intervention
+- `prompts/detection_prompt.md` - Controls what activities are allowed/blocked
+- `prompts/intervention_prompt.md` - Controls the personality of the AI coach
 
-When in a conversation with Gemini:
-- Type your responses normally to continue the conversation
-- `exit` - End the intervention and return to monitoring
-- The conversation will help you refocus on productive tasks
+### For Gemini Users
 
-### Debug Mode
+Some Gemini models may be overly strict about what they consider inappropriate. If Gemini is blocking legitimate work activities, add them to the "Allowed activities" section in `detection_prompt.md`. For example:
 
-Run with detailed logging and screenshot saving:
-```bash
-python productivity_guard.py --debug
+```markdown
+Allowed activities:
+- Your specific work websites
+- Research sites you need
+- Tools you use for work
 ```
 
-In debug mode:
-- Check interval reduced to 10 seconds
-- Screenshots saved to `debug_screenshots/` directory
-- Detailed API request/response logging
-- Performance metrics displayed
+## Commands
 
-## Configuration
+### During Monitoring
+- `x <description>` - Add a temporary exception (e.g., `x reading React documentation`)
+- `status` - Check if monitoring is active
+- `q` or `quit` - Stop the app
 
-You can customize the behavior by modifying these parameters in the code:
-
-- `interval` (default: 30): Seconds between checks
-- `ocr_library` (default: None): Set to 'easyocr' or 'pytesseract' for text extraction
-- Flash model threshold for initial detection
-- Pro model reasoning prompts
-
-## Testing
-
-The project includes a comprehensive test suite with 100% code coverage goals.
-
-### Run Tests
-
-```bash
-# Run with coverage report
-python run_tests.py
-
-# Run specific test module
-python -m unittest test_productivity_guard.TestProductivityGuard
-
-# Run with verbose output
-python -m unittest discover -v
-```
-
-### Test Coverage
-
-The test suite includes:
-- Unit tests for all core functionality
-- Mock-based testing for external dependencies
-- Integration tests for the full monitoring cycle
-- Screenshot capture simulation
-- LLM response mocking
-- User interaction testing
-
-## Architecture
-
-### Core Components
-
-1. **ProductivityGuard**: Main class orchestrating the monitoring process
-2. **LLM Integration**: Uses neels-utils for Gemini API access via OpenRouter
-3. **Screenshot Capture**: Cross-platform screenshot functionality
-4. **OCR Processing**: Optional text extraction for better content analysis
-5. **Two-Stage Detection**:
-   - Stage 1: Gemini Flash for quick binary classification
-   - Stage 2: Gemini Pro with reasoning for detailed analysis
-
-### How It Works
-
-1. **Screenshot Capture**: Takes screenshots of all monitors
-2. **Initial Check**: Gemini Flash quickly determines if the content might be procrastination
-3. **Detailed Analysis**: If flagged, Gemini Pro analyzes with reasoning to confirm
-4. **Intervention**: Starts an interactive conversation to help refocus
-5. **Exception Handling**: Respects user-defined productivity exceptions
+### During Intervention
+- Type normally to chat with the AI coach
+- `exit` - End the conversation and return to monitoring
 
 ## Troubleshooting
 
-### Common Issues
+### "No API key found"
+Make sure your `.env` file exists and contains your OpenRouter API key.
 
-1. **"No API key found"**: Ensure your `.env` file contains `OPENROUTER_API_KEY`
-2. **Screenshot errors**: Check screen recording permissions (especially on macOS)
-3. **OCR not working**: Verify OCR library installation and system dependencies
-4. **High CPU usage**: Increase the check interval or disable OCR
+### Nothing happens when procrastination is detected
+On macOS, grant Terminal permission to control your computer:
+- System Preferences → Privacy & Security → Accessibility
+- Add Terminal (or your terminal app) to the allowed list
 
-### Debug Tips
+### Screenshots not working
+You may need to grant screen recording permissions:
+- System Preferences → Privacy & Security → Screen Recording
+- Add Terminal (or your terminal app) to the allowed list
 
-1. Run in debug mode to see detailed logs
-2. Check `debug_screenshots/` to verify what the AI sees
-3. Review intervention descriptions to understand detection reasoning
-4. Test with known procrastination sites to verify detection
+## Getting Help with the Code
 
-## Privacy & Security
+If you want to understand or modify this code, you can:
 
-- Screenshots are processed locally and sent only to the Gemini API
-- No data is stored permanently unless debug mode is enabled
-- API keys are never logged or included in screenshots
-- All communications use HTTPS
+1. Use [repo2text.com](https://repo2text.com) to convert this repository into a text format
+2. Paste the result into any AI assistant (ChatGPT, Claude, etc.)
+3. Ask your questions!
 
-## Development
+## Privacy
 
-### Project Structure
+- Screenshots are only sent to Google's Gemini AI for analysis
+- No data is permanently stored (unless you run in debug mode)
+- Your API key is never included in screenshots or logs
 
-```
-productivity_guard/
-├── productivity_guard.py    # Main application
-├── test_productivity_guard.py # Test suite
-├── run_tests.py            # Test runner with coverage
-├── requirements.txt        # Python dependencies
-├── README.md              # This file
-├── .env                   # API keys (not in git)
-├── .gitignore            # Git ignore rules
-└── debug_screenshots/     # Debug mode screenshots
-```
+## Advanced Usage
 
-### Adding Features
-
-1. Follow the existing code patterns
-2. Add comprehensive tests for new functionality
-3. Update this README with new features
-4. Ensure all tests pass before committing
-
-### Code Style
-
-- Follow PEP 8 Python style guidelines
-- Add type hints for function parameters
-- Include docstrings for all public methods
-- Keep functions focused and testable
+For technical details, debugging, and development information, see [TECHNICAL.md](TECHNICAL.md).
 
 ## License
 
-This project is for personal use. Modify and extend as needed for your productivity needs.
-
-## Acknowledgments
-
-- Uses Gemini AI models via OpenRouter for content analysis
-- Built with neels-utils for LLM operations
-- Inspired by the need to stay focused in a distraction-filled digital world
+This is free and open source software. Feel free to modify it for your personal productivity needs!
