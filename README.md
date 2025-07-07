@@ -1,3 +1,5 @@
+**Warning:** 99% written by Claude Code, use at your own risk
+
 # ProductivityGuard
 
 A friendly AI assistant that helps you stay focused by monitoring your screen for procrastination. When it detects you're getting distracted, it starts a supportive conversation to help you get back on track.
