@@ -3,7 +3,7 @@ import time
 import tempfile
 from datetime import datetime
 from mss import mss
-from llm_utils import LLMClient
+from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 import base64
 import io
@@ -78,8 +78,23 @@ class ProductivityGuard:
         if debug:
             self.interval = 10  # Override interval in debug mode
 
-        # Initialize LLMClient with OpenRouter (default)
-        self.client = LLMClient(app_name="productivity-guard")
+        # Check for API key
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "No API key found. Please set OPENROUTER_API_KEY in your .env file.\n"
+                "Get your API key from https://openrouter.ai/settings/keys"
+            )
+        
+        # Initialize OpenAI client with OpenRouter
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            default_headers={
+                "HTTP-Referer": "https://github.com/neelnanda-io/productivity_guard",
+                "X-Title": "ProductivityGuard"
+            }
+        )
         self.debug = debug
         self.sct = mss()  # Initialize screen capture tool
 
@@ -308,44 +323,49 @@ class ProductivityGuard:
                 debug_messages = [{"role": "user", "content": debug_content}]
                 self.debug_log("Sending message to Gemini:", debug_messages)
 
-            # Convert messages format for LLMClient
-            # Extract system message if present
-            system_msg = None
-            user_messages = messages
-            if messages and messages[0]["role"] == "system":
-                system_msg = messages[0]["content"]
-                user_messages = messages[1:]
+            # Convert message format for OpenAI API
+            openai_messages = []
             
-            # Combine user messages into a single prompt
-            prompt = ""
-            for msg in user_messages:
-                if msg["role"] == "user":
-                    for content in msg["content"]:
-                        if content["type"] == "text":
-                            prompt += content["text"] + "\n"
-                        elif content["type"] == "image_url":
-                            # Images will be handled separately
-                            pass
+            # Add system message
+            openai_messages.append({
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            })
             
-            # Extract images from messages
-            images = []
-            for msg in user_messages:
-                if msg["role"] == "user":
-                    for content in msg["content"]:
-                        if content["type"] == "image_url":
-                            images.append(content["image_url"]["url"])
+            # Convert content format for OpenAI
+            openai_content = []
+            for item in content:
+                if item["type"] == "text":
+                    openai_content.append({
+                        "type": "text",
+                        "text": item["text"]
+                    })
+                elif item["type"] == "image":
+                    # OpenAI expects image_url format
+                    openai_content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{item['source']['media_type']};base64,{item['source']['data']}"
+                        }
+                    })
+            
+            openai_messages.append({
+                "role": "user",
+                "content": openai_content
+            })
             
             # Make the API call
-            response_data = self.client.chat(
-                prompt.strip(),
+            extra_body = {}
+            if use_reasoning and ("pro" in model_name.lower() or "reasoning" in model_name.lower() or "thinking" in model_name.lower()):
+                extra_body["reasoning"] = True
+            
+            completion = self.client.chat.completions.create(
                 model=model_name,
-                system=system_msg,
-                images=images if images else None,
-                reasoning=use_reasoning and ("pro" in model_name.lower() or "reasoning" in model_name.lower() or "thinking" in model_name.lower()),
-                include_reasoning=False  # We don't need reasoning tokens in response
+                messages=openai_messages,
+                extra_body=extra_body
             )
 
-            response = response_data["content"].strip()
+            response = completion.choices[0].message.content.strip()
             self.debug_log(f"Full response from {model_name}: {response}")
 
             # Print reasoning if requested (for Flash model)
@@ -520,23 +540,20 @@ class ProductivityGuard:
                 if self.debug:
                     self.debug_log(f"Sending intervention message to {pro_model}:", current_messages)
                 
-                # Prepare conversation history for LLMClient
-                conversation_text = ""
-                for msg in current_messages:
-                    if msg["role"] == "user":
-                        conversation_text += f"User: {msg['content']}\n"
-                    elif msg["role"] == "assistant":
-                        conversation_text += f"Assistant: {msg['content']}\n"
+                # Prepare messages for OpenAI API
+                openai_messages = [
+                    {"role": "system", "content": intervention_prompt}
+                ]
+                openai_messages.extend(current_messages)
                 
-                response_data = self.client.chat(
-                    conversation_text.strip(),
+                # Make the API call with reasoning
+                completion = self.client.chat.completions.create(
                     model=pro_model,
-                    system=intervention_prompt,
-                    reasoning=True,
-                    include_reasoning=False
+                    messages=openai_messages,
+                    extra_body={"reasoning": True}
                 )
 
-                gemini_response = response_data["content"]
+                gemini_response = completion.choices[0].message.content
                 print(f"\nGemini: {gemini_response}")
 
                 # Get user input

@@ -31,11 +31,11 @@ class TestProductivityGuard(unittest.TestCase):
         })
         self.env_patcher.start()
         
-        # Mock LLMClient
-        self.llm_client_patcher = patch('llm_utils.LLMClient')
-        self.mock_llm_client_class = self.llm_client_patcher.start()
-        self.mock_llm_client = Mock()
-        self.mock_llm_client_class.return_value = self.mock_llm_client
+        # Mock OpenAI client
+        self.openai_patcher = patch('productivity_guard.OpenAI')
+        self.mock_openai_class = self.openai_patcher.start()
+        self.mock_openai_client = Mock()
+        self.mock_openai_class.return_value = self.mock_openai_client
         
         # Mock mss
         self.mss_patcher = patch('productivity_guard.mss')
@@ -46,7 +46,7 @@ class TestProductivityGuard(unittest.TestCase):
     def tearDown(self):
         """Clean up after tests."""
         self.env_patcher.stop()
-        self.llm_client_patcher.stop()
+        self.openai_patcher.stop()
         self.mss_patcher.stop()
     
     def test_init_default_values(self):
@@ -250,7 +250,7 @@ class TestProductivityGuard(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(response, "Cached response")
         # LLM should not be called
-        self.mock_llm_client.chat.assert_not_called()
+        self.mock_openai_client.chat.completions.create.assert_not_called()
     
     def test_check_with_model_api_call(self):
         """Test _check_with_model makes API call for new screenshots."""
@@ -260,16 +260,17 @@ class TestProductivityGuard(unittest.TestCase):
         img1 = Image.new('RGB', (100, 100), color='red')
         screenshots = [img1]
         
-        # Mock LLM response
-        self.mock_llm_client.chat.return_value = {
-            "content": "The user is browsing social media.\nYes"
-        }
+        # Mock OpenAI response
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "The user is browsing social media.\nYes"
+        self.mock_openai_client.chat.completions.create.return_value = mock_response
         
         result, response = guard._check_with_model(screenshots, None, "test-model")
         
         self.assertTrue(result)
         self.assertIn("browsing social media", response)
-        self.mock_llm_client.chat.assert_called_once()
+        self.mock_openai_client.chat.completions.create.assert_called_once()
     
     def test_check_with_model_reasoning(self):
         """Test _check_with_model with reasoning enabled."""
@@ -280,9 +281,10 @@ class TestProductivityGuard(unittest.TestCase):
         screenshots = [img1]
         
         # Mock LLM response
-        self.mock_llm_client.chat.return_value = {
-            "content": "Working on code.\nNo"
-        }
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Working on code.\nNo"
+        self.mock_openai_client.chat.completions.create.return_value = mock_response
         
         result, response = guard._check_with_model(
             screenshots, None, "test-pro-model", use_reasoning=True
@@ -290,8 +292,8 @@ class TestProductivityGuard(unittest.TestCase):
         
         self.assertFalse(result)
         # Check that reasoning was passed to the API
-        call_args = self.mock_llm_client.chat.call_args[1]
-        self.assertTrue(call_args.get('reasoning'))
+        call_args = self.mock_openai_client.chat.completions.create.call_args[1]
+        self.assertTrue(call_args.get('extra_body', {}).get('reasoning'))
     
     def test_check_procrastination_two_step(self):
         """Test the two-step procrastination check process."""
@@ -303,16 +305,19 @@ class TestProductivityGuard(unittest.TestCase):
         
         # First call (Flash) returns True (procrastinating)
         # Second call (Pro) returns False (not procrastinating)
-        self.mock_llm_client.chat.side_effect = [
-            {"content": "User is on Reddit.\nYes"},
-            {"content": "User is researching for work.\nNo"}
-        ]
+        mock_responses = []
+        for content in ["User is on Reddit.\nYes", "User is researching for work.\nNo"]:
+            mock_resp = Mock()
+            mock_resp.choices = [Mock()]
+            mock_resp.choices[0].message.content = content
+            mock_responses.append(mock_resp)
+        self.mock_openai_client.chat.completions.create.side_effect = mock_responses
         
         with patch('builtins.print'):
             result = guard.check_procrastination(screenshots)
         
         self.assertFalse(result)  # Pro's decision is final
-        self.assertEqual(self.mock_llm_client.chat.call_count, 2)
+        self.assertEqual(self.mock_openai_client.chat.completions.create.call_count, 2)
     
     def test_check_procrastination_flash_says_no(self):
         """Test when Flash says not procrastinating, skip Pro check."""
@@ -323,15 +328,16 @@ class TestProductivityGuard(unittest.TestCase):
         screenshots = [img1]
         
         # Flash returns False (not procrastinating)
-        self.mock_llm_client.chat.return_value = {
-            "content": "User is coding.\nNo"
-        }
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "User is coding.\nNo"
+        self.mock_openai_client.chat.completions.create.return_value = mock_response
         
         with patch('builtins.print'):
             result = guard.check_procrastination(screenshots)
         
         self.assertFalse(result)
-        self.assertEqual(self.mock_llm_client.chat.call_count, 1)  # Only Flash called
+        self.assertEqual(self.mock_openai_client.chat.completions.create.call_count, 1)  # Only Flash called
     
     @patch('sys.platform', 'darwin')
     @patch('subprocess.run')
@@ -364,17 +370,20 @@ class TestProductivityGuard(unittest.TestCase):
         guard.last_description = "User is on social media"
         
         # Mock LLM responses
-        self.mock_llm_client.chat.side_effect = [
-            {"content": "Let's get back to work!"},
-            {"content": "Great! What were you working on?"}
-        ]
+        mock_responses = []
+        for content in ["Let's get back to work!", "Great! What were you working on?"]:
+            mock_resp = Mock()
+            mock_resp.choices = [Mock()]
+            mock_resp.choices[0].message.content = content
+            mock_responses.append(mock_resp)
+        self.mock_openai_client.chat.completions.create.side_effect = mock_responses
         
         # Mock user input
         with patch('builtins.input', side_effect=["I was just taking a break", "exit"]):
             with patch('builtins.print'):
                 guard.start_intervention()
         
-        self.assertEqual(self.mock_llm_client.chat.call_count, 2)
+        self.assertEqual(self.mock_openai_client.chat.completions.create.call_count, 2)
     
     def test_wait_with_input_check(self):
         """Test wait_with_input_check method."""
@@ -468,14 +477,14 @@ class TestProductivityGuard(unittest.TestCase):
 class TestIntegration(unittest.TestCase):
     """Integration tests for ProductivityGuard."""
     
-    @patch('productivity_guard.LLMClient')
+    @patch('productivity_guard.OpenAI')
     @patch('productivity_guard.mss')
     @patch.dict(os.environ, {'OPENROUTER_API_KEY': 'test-key'})
-    def test_full_monitoring_cycle(self, mock_mss, mock_llm_client_class):
+    def test_full_monitoring_cycle(self, mock_mss, mock_openai_class):
         """Test a complete monitoring cycle."""
         # Setup mocks
         mock_client = Mock()
-        mock_llm_client_class.return_value = mock_client
+        mock_openai_class.return_value = mock_client
         
         mock_sct = Mock()
         mock_mss.return_value = mock_sct
@@ -492,7 +501,10 @@ class TestIntegration(unittest.TestCase):
         mock_sct.grab.return_value = mock_sct_img
         
         # Mock LLM responses
-        mock_client.chat.return_value = {"content": "User is working.\nNo"}
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "User is working.\nNo"
+        mock_client.chat.completions.create.return_value = mock_response
         
         # Create guard and run one iteration
         guard = ProductivityGuard()
@@ -506,7 +518,7 @@ class TestIntegration(unittest.TestCase):
             result = guard.check_procrastination(screenshots)
         
         self.assertFalse(result)
-        mock_client.chat.assert_called()
+        mock_client.chat.completions.create.assert_called()
 
 
 if __name__ == '__main__':
