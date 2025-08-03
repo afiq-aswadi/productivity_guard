@@ -108,6 +108,7 @@ class ProductivityGuard:
         # Input handling
         self.input_queue = queue.Queue()
         self.stop_monitoring = False
+        self.in_intervention = False
 
         # Initialize OCR reader if available
         self.ocr_reader = None
@@ -354,16 +355,24 @@ class ProductivityGuard:
                 "content": openai_content
             })
             
+            # Show loading feedback
+            if not self.in_intervention:  # Only show if not in intervention mode
+                print("🔍 Analyzing screenshots... ", end='', flush=True)
+            
             # Make the API call
             extra_body = {}
             if use_reasoning and ("pro" in model_name.lower() or "reasoning" in model_name.lower() or "thinking" in model_name.lower()):
-                extra_body["reasoning"] = True
+                extra_body["reasoning"] = {}
             
             completion = self.client.chat.completions.create(
                 model=model_name,
                 messages=openai_messages,
                 extra_body=extra_body
             )
+            
+            # Clear loading message
+            if not self.in_intervention:
+                print("\r" + " " * 30 + "\r", end='', flush=True)
 
             response = completion.choices[0].message.content.strip()
             self.debug_log(f"Full response from {model_name}: {response}")
@@ -509,80 +518,175 @@ class ProductivityGuard:
 
     def start_intervention(self):
         """Start an intervention chat with Gemini using terminal."""
+        # Set intervention mode
+        self.in_intervention = True
+        
         # Bring terminal window to front
         self.bring_terminal_to_front()
 
-        print("\n=== Productivity Intervention ===")
-        print("Gemini is here to help you get back on track!")
-
+        print("\n" + "="*60)
+        print("🚨 PRODUCTIVITY INTERVENTION 🚨")
+        print("="*60)
+        print("You've been caught procrastinating! Let's have a quick chat.")
+        
         if self.last_description:
-            print("\nContext from screenshots:")
-            print(self.last_description)
-            print()
+            print(f"\nWhat I observed: {self.last_description}")
+
+        print("\n💬 Chat Commands:")
+        print("  • Type 'exit' or 'quit' to end intervention")
+        print("  • Type 'endorse' if what you're doing is actually productive")
+        print("  • Type 'help' for these commands again")
+        print("  • Just chat normally with me to get back on track!")
+        print("-" * 60)
 
         # Keep track of conversation history
         messages = []
+        first_interaction = True
 
         while True:
             try:
-                # Get response from Gemini
-                current_messages = messages + [{
-                    "role": "user",
-                    "content": (
-                        "Context: " + self.last_description + "\n\n"
-                        "I've caught this person procrastinating. Help them get back to work with a motivating message."
-                    ) if not messages else "Please continue helping them get back to work."
-                }]
+                if first_interaction:
+                    # Start with user input first
+                    print("\nLet's talk! What were you doing?")
+                    user_input = self._get_safe_input("\nYou: ")
+                    first_interaction = False
+                else:
+                    # Get user input for continuing conversation
+                    user_input = self._get_safe_input("\nYou: ")
 
-                # Use Pro model with reasoning for intervention
+                # Handle special commands
+                user_lower = user_input.lower().strip()
+                if user_lower in ['exit', 'quit', 'q']:
+                    print("\n✅ Intervention ended. Let's get back to work!")
+                    break
+                elif user_lower in ['endorse', 'productive', 'this is productive']:
+                    print("\n✅ Got it! I'll note that this activity is productive.")
+                    print("Resuming regular monitoring...")
+                    break
+                elif user_lower in ['help', '?']:
+                    print("\n💬 Chat Commands:")
+                    print("  • 'exit', 'quit' or 'q' - End intervention")
+                    print("  • 'endorse' - Mark current activity as productive")
+                    print("  • 'help' or '?' - Show these commands")
+                    continue
+
+                # Add user message to history
+                messages.append({"role": "user", "content": user_input})
+
+                # Get response from Gemini
                 pro_model = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
                 
+                # Prepare context for first message
+                context_prompt = ""
+                if len(messages) == 1:  # First user message
+                    context_prompt = f"Context: {self.last_description}\n\nThe user was caught procrastinating. They said: '{user_input}'. Help them get back on track with a supportive but motivating response."
+                else:
+                    context_prompt = user_input
+
                 if self.debug:
-                    self.debug_log(f"Sending intervention message to {pro_model}:", current_messages)
+                    self.debug_log(f"Sending intervention message to {pro_model}")
+                
+                # Show loading feedback
+                print("💭 Thinking... (waiting for Gemini's response)", end='', flush=True)
                 
                 # Prepare messages for OpenAI API
                 openai_messages = [
                     {"role": "system", "content": intervention_prompt}
                 ]
-                openai_messages.extend(current_messages)
+                
+                # Add conversation history
+                for msg in messages[:-1]:  # All messages except the last one
+                    openai_messages.append(msg)
+                
+                # Add the current user message with context if it's the first message
+                openai_messages.append({
+                    "role": "user", 
+                    "content": context_prompt
+                })
                 
                 # Make the API call with reasoning
                 completion = self.client.chat.completions.create(
                     model=pro_model,
                     messages=openai_messages,
-                    extra_body={"reasoning": True}
+                    extra_body={"reasoning": {}}
                 )
 
+                # Clear the loading message
+                print("\r" + " " * 50 + "\r", end='', flush=True)
+                
                 gemini_response = completion.choices[0].message.content
-                print(f"\nGemini: {gemini_response}")
+                print(f"🤖 Gemini: {gemini_response}")
 
-                # Get user input
-                user_input = input("\nYou: ")
-                if user_input.lower().replace(" ", "") == "exit":
-                    break
-                if user_input.lower().replace("'", "").replace(" ", "") == "iendorsewhatimdoing":
-                    print("\nChat terminated - resuming regular monitoring.")
-                    break
-
-                # Add messages to conversation history
-                messages.extend([
-                    {"role": "assistant", "content": gemini_response},
-                    {"role": "user", "content": user_input}
-                ])
+                # Add Gemini's response to conversation history
+                messages.append({"role": "assistant", "content": gemini_response})
 
                 if self.debug:
                     self.debug_log("Updated conversation history:", messages)
 
-            except Exception as e:
-                print(f"Error during intervention: {e}")
+            except KeyboardInterrupt:
+                print("\n\n✅ Intervention ended (Ctrl+C). Let's get back to work!")
                 break
+            except Exception as e:
+                print(f"\n❌ Error during chat: {e}")
+                print("Let's try again or type 'exit' to end intervention.")
+                continue
+
+        # Clean up intervention state
+        self.in_intervention = False
+        
+        # Clear any remaining input from the queue
+        while not self.input_queue.empty():
+            try:
+                self.input_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        print("\n" + "="*60)
+        print("✅ Intervention complete. Resuming productivity monitoring...")
+        print("="*60)
+
+    def _get_safe_input(self, prompt):
+        """Get user input during intervention without conflicts."""
+        try:
+            # Print the prompt and wait for input
+            print(prompt, end='', flush=True)
+            
+            # Wait for input from the queue (the input thread will handle it)
+            while True:
+                try:
+                    user_input = self.input_queue.get(timeout=0.5)
+                    return user_input.strip()
+                except queue.Empty:
+                    # Continue waiting, but check if we should stop
+                    if self.stop_monitoring:
+                        return "exit"
+                    continue
+                    
+        except (EOFError, KeyboardInterrupt):
+            # Handle Ctrl+C or Ctrl+D gracefully
+            return "exit"
+        except Exception as e:
+            self.debug_log(f"Error getting user input: {e}")
+            return "exit"
 
     def input_thread(self):
         """Separate thread to handle user input without blocking."""
         while not self.stop_monitoring:
             try:
                 user_input = input()
-                self.input_queue.put(user_input)
+                
+                # During intervention, always put input in queue
+                # During normal monitoring, handle 'x' commands directly
+                if self.in_intervention:
+                    self.input_queue.put(user_input)
+                else:
+                    # Handle 'x' commands during normal monitoring
+                    if user_input.lower().startswith("x "):
+                        self.input_queue.put(user_input)
+                    else:
+                        # For other inputs during monitoring, just put in queue
+                        self.input_queue.put(user_input)
+                        
             except EOFError:
                 break
             except Exception:
