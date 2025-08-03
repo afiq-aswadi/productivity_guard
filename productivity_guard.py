@@ -453,68 +453,167 @@ class ProductivityGuard:
                 # First play a notification sound to get attention
                 subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
 
-                # Try different approaches to bring terminal to front
-                scripts = [
-                    # Approach 1: Simple activate
-                    f'''
-                    tell application "{terminal_app}"
-                        activate
-                    end tell
-                    ''',
-                    
-                    # Approach 2: Focus on terminal window
-                    f'''
-                    tell application "{terminal_app}"
-                        activate
-                        tell application "System Events"
-                            tell process "{terminal_app}"
-                                set frontmost to true
-                            end tell
-                        end tell
-                    end tell
-                    ''',
-                    
-                    # Approach 3: Try to bring window to front without minimizing others
-                    f'''
-                    tell application "System Events"
-                        tell process "{terminal_app}"
-                            set frontmost to true
-                        end tell
-                    end tell
-                    '''
-                ]
+                # Check if yabai is available for tiling window manager support
+                yabai_available = False
+                try:
+                    subprocess.run(['which', 'yabai'], check=True, capture_output=True)
+                    yabai_available = True
+                    self.debug_log("Yabai detected - using yabai for window management")
+                except subprocess.CalledProcessError:
+                    self.debug_log("Yabai not available - using AppleScript")
 
                 success = False
-                for script in scripts:
+
+                if yabai_available:
+                    # Use yabai to handle window focus across multiple desktops
                     try:
-                        subprocess.run(['osascript', '-e', script], check=True, capture_output=True)
+                        # Find terminal windows
+                        result = subprocess.run(['yabai', '-m', 'query', '--windows'], 
+                                              capture_output=True, text=True, check=True)
+                        windows = json.loads(result.stdout)
+                        
+                        # Look for terminal windows
+                        terminal_windows = []
+                        for window in windows:
+                            app_name = window.get('app', '').lower()
+                            if ('terminal' in app_name or 'iterm' in app_name or 
+                                terminal_app.lower() in app_name):
+                                terminal_windows.append(window)
+
+                        if terminal_windows:
+                            # Focus the most recent terminal window
+                            target_window = terminal_windows[0]  # First one is usually most recent
+                            window_id = target_window['id']
+                            space_id = target_window['space']
+                            
+                            # Switch to the space containing the terminal
+                            subprocess.run(['yabai', '-m', 'space', '--focus', str(space_id)], check=True)
+                            time.sleep(0.2)  # Give space switch time to complete
+                            
+                            # Focus the terminal window
+                            subprocess.run(['yabai', '-m', 'window', '--focus', str(window_id)], check=True)
+                            
+                            success = True
+                            self.debug_log(f"Focused terminal window {window_id} on space {space_id}")
+                        else:
+                            # No terminal windows found, create one
+                            self.debug_log("No terminal windows found, creating new one")
+                            if terminal_app.lower() == 'iterm.app' or 'iterm' in terminal_app.lower():
+                                subprocess.run(['open', '-a', 'iTerm'], check=True)
+                            else:
+                                subprocess.run(['open', '-a', 'Terminal'], check=True)
+                            time.sleep(1)  # Give new terminal time to open
+                            success = True
+                            
+                    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+                        self.debug_log(f"Yabai approach failed: {e}")
+                        # Fall back to AppleScript
+                        yabai_available = False
+
+                # Fall back to AppleScript if yabai isn't available or failed
+                if not success and not yabai_available:
+                    scripts = [
+                        # Approach 1: Simple activate
+                        f'''
+                        tell application "{terminal_app}"
+                            activate
+                        end tell
+                        ''',
+                        
+                        # Approach 2: Focus on terminal window and bring all windows
+                        f'''
+                        tell application "{terminal_app}"
+                            activate
+                            tell application "System Events"
+                                tell process "{terminal_app}"
+                                    set frontmost to true
+                                    -- Bring all windows to front
+                                    set visible to true
+                                end tell
+                            end tell
+                        end tell
+                        ''',
+                        
+                        # Approach 3: Force create new window if needed
+                        f'''
+                        tell application "{terminal_app}"
+                            activate
+                            if (count of windows) is 0 then
+                                do script ""
+                            end if
+                            tell application "System Events"
+                                tell process "{terminal_app}"
+                                    set frontmost to true
+                                end tell
+                            end tell
+                        end tell
+                        ''',
+                        
+                        # Approach 4: Open new terminal window as last resort
+                        f'''
+                        tell application "{terminal_app}"
+                            do script ""
+                            activate
+                            tell application "System Events"
+                                tell process "{terminal_app}"
+                                    set frontmost to true
+                                end tell
+                            end tell
+                        end tell
+                        '''
+                    ]
+
+                    for i, script in enumerate(scripts):
+                        try:
+                            subprocess.run(['osascript', '-e', script], check=True, capture_output=True)
+                            success = True
+                            self.debug_log(f"Brought {terminal_app} to front using AppleScript approach {i+1}")
+                            break
+                        except subprocess.CalledProcessError as e:
+                            self.debug_log(f"AppleScript approach {i+1} failed: {e}")
+                            continue
+
+                # Additional fallback: try opening a new terminal window using `open` command
+                if not success:
+                    try:
+                        if terminal_app.lower() == 'iterm.app' or 'iterm' in terminal_app.lower():
+                            subprocess.run(['open', '-a', 'iTerm'], check=True)
+                        else:
+                            subprocess.run(['open', '-a', 'Terminal'], check=True)
                         success = True
-                        break
+                        self.debug_log("Opened new terminal window using open command")
                     except subprocess.CalledProcessError:
-                        continue
+                        pass
 
                 if success:
-                    self.debug_log(f"Brought {terminal_app} to front")
-                else:
-                    # If all window management attempts fail, at least print a visible marker
-                    print("\n" + "="*80)
-                    print("PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW")
-                    print("="*80 + "\n")
-                    # Play the sound again to ensure it gets attention
+                    # Give the terminal a moment to open/activate
+                    time.sleep(0.5)
+                    # Play sound again to ensure attention
                     subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                else:
+                    # If all attempts fail, print visible marker and multiple sounds
+                    print("\n" + "="*80)
+                    print("🚨 PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW 🚨")
+                    print("="*80 + "\n")
+                    # Play multiple sounds to get attention
+                    for _ in range(3):
+                        subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                        time.sleep(0.3)
             else:
                 self.debug_log("Window management not implemented for this platform")
                 print("\n" + "="*80)
-                print("PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW")
+                print("🚨 PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW 🚨")
                 print("="*80 + "\n")
         except Exception as e:
             print(f"Error in window management: {e}")
             # Fallback to visible marker and sound
             print("\n" + "="*80)
-            print("PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW")
+            print("🚨 PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW 🚨")
             print("="*80 + "\n")
             if sys.platform == 'darwin':
-                subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                for _ in range(3):
+                    subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                    time.sleep(0.3)
 
     def start_intervention(self):
         """Start an intervention chat with Gemini using terminal."""
