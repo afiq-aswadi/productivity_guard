@@ -133,6 +133,11 @@ class ProductivityGuard:
         # Daily logging
         self.setup_daily_logging()
 
+        # Daily todo list
+        self.daily_todos = []  # List of todo items for the day
+        self.todo_counter = 1  # Counter for todo IDs
+        self.setup_daily_todos()
+
         # Initialize OCR reader if available
         self.ocr_reader = None
         if OCR_AVAILABLE:
@@ -652,6 +657,13 @@ class ProductivityGuard:
                     minutes = seconds / 60
                     print(f"   • {category.title()}: {minutes:.0f} minutes")
 
+        # Show todo progress
+        if self.daily_todos:
+            completed = sum(1 for todo in self.daily_todos if todo["completed"])
+            total = len(self.daily_todos)
+            progress = (completed / total) * 100 if total > 0 else 0
+            print(f"📝 Todo progress: {completed}/{total} ({progress:.0f}%)")
+
         print()
 
         # Also save to file
@@ -895,6 +907,13 @@ Recent Activity Log:
                     minutes = seconds / 60
                     summary_content += f"  - {category.title()}: {minutes:.0f} minutes\n"
 
+        # Add todo progress to hourly summary
+        if self.daily_todos:
+            completed = sum(1 for todo in self.daily_todos if todo["completed"])
+            total = len(self.daily_todos)
+            progress = (completed / total) * 100 if total > 0 else 0
+            summary_content += f"- **Todo Progress**: {completed}/{total} ({progress:.0f}%)\n"
+
         summary_content += "\n"
         self.append_to_daily_log(summary_content)
 
@@ -972,8 +991,29 @@ Recent Activity Log:
 
 """
 
+        # Add todo summary
+        if self.daily_todos:
+            completed_todos = [t for t in self.daily_todos if t["completed"]]
+            pending_todos = [t for t in self.daily_todos if not t["completed"]]
+            
+            summary_content += f"""## 📝 Todo Summary
+
+**Completed ({len(completed_todos)}):**
+"""
+            for todo in completed_todos:
+                summary_content += f"- ✅ {todo['text']}\n"
+            
+            if pending_todos:
+                summary_content += f"\n**Remaining ({len(pending_todos)}):**\n"
+                for todo in pending_todos:
+                    summary_content += f"- ⬜ {todo['text']}\n"
+            
+            total_todos = len(self.daily_todos)
+            progress = (len(completed_todos) / total_todos) * 100 if total_todos > 0 else 0
+            summary_content += f"\n**Progress**: {len(completed_todos)}/{total_todos} ({progress:.0f}%)\n\n"
+
         # Add activity log summary
-        summary_content += f"""## 📝 Activity Summary
+        summary_content += f"""## 📊 Activity Summary
 
 Recent activities from today's log:
 """
@@ -1038,6 +1078,203 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
             
         except Exception as e:
             self.debug_log(f"Error saving workday summary: {e}")
+
+    def setup_daily_todos(self):
+        """Set up daily todo list file and load existing todos if any."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        self.daily_todo_file = os.path.join(self.data_dir, f'{today}_daily_todos.json')
+        
+        # Load existing todos if file exists
+        if os.path.exists(self.daily_todo_file):
+            try:
+                with open(self.daily_todo_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.daily_todos = data.get('todos', [])
+                    self.todo_counter = data.get('next_id', 1)
+                self.debug_log(f"Loaded {len(self.daily_todos)} existing todos")
+            except Exception as e:
+                self.debug_log(f"Error loading todos: {e}")
+                self.daily_todos = []
+                self.todo_counter = 1
+        else:
+            # Ask user for initial todos
+            self.collect_daily_todos()
+
+    def collect_daily_todos(self):
+        """Collect daily todos from user at program start."""
+        if self.test_mode:
+            # Use predefined todos for testing
+            self.daily_todos = [
+                {"id": 1, "text": "Complete feature implementation", "completed": False, "created_at": datetime.now().isoformat()},
+                {"id": 2, "text": "Review pull requests", "completed": False, "created_at": datetime.now().isoformat()},
+                {"id": 3, "text": "Update documentation", "completed": False, "created_at": datetime.now().isoformat()}
+            ]
+            self.todo_counter = 4
+            self.save_todos()
+            return
+
+        print("\n" + "="*60)
+        print("📝 DAILY TODO LIST SETUP")
+        print("="*60)
+        print("What do you want to get done today?")
+        print("Enter your todo items one by one. Press Enter with empty input when done.")
+        print("-" * 60)
+
+        todo_items = []
+        while True:
+            try:
+                item = input(f"Todo #{len(todo_items) + 1}: ").strip()
+                if not item:
+                    break
+                todo_items.append(item)
+                print(f"✅ Added: {item}")
+            except (EOFError, KeyboardInterrupt):
+                break
+
+        # Convert to todo objects
+        for item in todo_items:
+            todo = {
+                "id": self.todo_counter,
+                "text": item,
+                "completed": False,
+                "created_at": datetime.now().isoformat()
+            }
+            self.daily_todos.append(todo)
+            self.todo_counter += 1
+
+        if self.daily_todos:
+            print(f"\n✅ Created {len(self.daily_todos)} todos for today!")
+            self.save_todos()
+            self.log_todos_to_activity_file()
+        else:
+            print("\n📝 No todos created. You can add them later during the day.")
+
+        print("=" * 60)
+
+    def save_todos(self):
+        """Save todos to JSON file."""
+        try:
+            data = {
+                "date": datetime.now().strftime('%Y-%m-%d'),
+                "todos": self.daily_todos,
+                "next_id": self.todo_counter
+            }
+            with open(self.daily_todo_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.debug_log(f"Error saving todos: {e}")
+
+    def log_todos_to_activity_file(self):
+        """Log current todos to the daily activity log."""
+        if not self.daily_todos:
+            return
+            
+        todo_content = "\n## 📝 Daily Todo List\n\n"
+        for todo in self.daily_todos:
+            status = "✅" if todo["completed"] else "⬜"
+            todo_content += f"- {status} {todo['text']}\n"
+        todo_content += "\n"
+        
+        self.append_to_daily_log(todo_content)
+
+    def show_todos(self):
+        """Display current todo list."""
+        if not self.daily_todos:
+            print("\n📝 No todos for today.")
+            return
+
+        print("\n📝 TODAY'S TODOS:")
+        print("-" * 40)
+        for todo in self.daily_todos:
+            status = "✅" if todo["completed"] else "⬜"
+            print(f"{status} {todo['id']}. {todo['text']}")
+        
+        completed = sum(1 for todo in self.daily_todos if todo["completed"])
+        total = len(self.daily_todos)
+        if total > 0:
+            progress = (completed / total) * 100
+            print(f"\n📊 Progress: {completed}/{total} ({progress:.0f}%)")
+
+    def complete_todo(self, todo_id):
+        """Mark a todo as completed."""
+        for todo in self.daily_todos:
+            if todo["id"] == todo_id:
+                if not todo["completed"]:
+                    todo["completed"] = True
+                    todo["completed_at"] = datetime.now().isoformat()
+                    print(f"✅ Completed: {todo['text']}")
+                    self.save_todos()
+                    self.log_activity_to_file("PLANNING", f"Completed todo: {todo['text']}")
+                    return True
+                else:
+                    print(f"ℹ️  Todo #{todo_id} is already completed.")
+                    return False
+        print(f"❌ Todo #{todo_id} not found.")
+        return False
+
+    def add_todo(self, text):
+        """Add a new todo item."""
+        todo = {
+            "id": self.todo_counter,
+            "text": text,
+            "completed": False,
+            "created_at": datetime.now().isoformat()
+        }
+        self.daily_todos.append(todo)
+        self.todo_counter += 1
+        print(f"✅ Added todo #{todo['id']}: {text}")
+        self.save_todos()
+        self.log_activity_to_file("PLANNING", f"Added todo: {text}")
+
+    def suggest_todo_updates(self, activity_description):
+        """Use AI to suggest todo updates based on current activity."""
+        if not self.daily_todos or not activity_description:
+            return
+
+        try:
+            # Create a prompt for todo suggestions
+            todo_list = "\n".join([f"- {'✅' if t['completed'] else '⬜'} {t['text']}" for t in self.daily_todos])
+            
+            prompt = f"""
+Based on the user's current activity and their todo list, suggest if any todos should be marked as completed or if new todos should be added.
+
+Current Activity: {activity_description}
+
+Current Todo List:
+{todo_list}
+
+Respond in this format:
+COMPLETE: [todo text] (if any todo should be marked complete)
+ADD: [new todo text] (if a new todo should be added)
+NONE: (if no changes needed)
+
+Only suggest obvious completions or important additions. Be conservative.
+"""
+
+            model_name = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash')
+            completion = self.client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You are a productivity assistant that helps manage todo lists."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            suggestion = completion.choices[0].message.content.strip()
+            
+            if suggestion.startswith("COMPLETE:"):
+                todo_text = suggestion[9:].strip()
+                # Find matching todo and suggest completion
+                for todo in self.daily_todos:
+                    if not todo["completed"] and todo_text.lower() in todo["text"].lower():
+                        print(f"\n🤖 AI Suggestion: Complete todo '{todo['text']}'? (Type 'done {todo['id']}' to confirm)")
+                        break
+            elif suggestion.startswith("ADD:"):
+                new_todo = suggestion[4:].strip()
+                print(f"\n🤖 AI Suggestion: Add todo '{new_todo}'? (Type 'add {new_todo}' to confirm)")
+
+        except Exception as e:
+            self.debug_log(f"Error generating todo suggestions: {e}")
 
     def bring_terminal_to_front(self):
         """Bring the terminal window to front and play notification sound."""
@@ -1382,6 +1619,12 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
                         self.input_queue.put("end_workday")
                     elif user_input.lower() in ["summary", "status", "progress"]:
                         self.input_queue.put("get_summary")
+                    elif user_input.lower() in ["todos", "todo", "list"]:
+                        self.input_queue.put("show_todos")
+                    elif user_input.lower().startswith("done "):
+                        self.input_queue.put(user_input)
+                    elif user_input.lower().startswith("add "):
+                        self.input_queue.put(user_input)
                     else:
                         # For other inputs during monitoring, just put in queue
                         self.input_queue.put(user_input)
@@ -1420,6 +1663,24 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
                 elif user_input == "get_summary":
                     self.generate_hourly_summary()
 
+                # Handle todo commands
+                elif user_input == "show_todos":
+                    self.show_todos()
+                
+                elif user_input.lower().startswith("done "):
+                    try:
+                        todo_id = int(user_input[5:].strip())
+                        self.complete_todo(todo_id)
+                    except ValueError:
+                        print("❌ Invalid todo ID. Use 'done [number]'")
+                
+                elif user_input.lower().startswith("add "):
+                    todo_text = user_input[4:].strip()
+                    if todo_text:
+                        self.add_todo(todo_text)
+                    else:
+                        print("❌ No todo text provided. Use 'add [todo text]'")
+
             except queue.Empty:
                 # No input received, continue waiting
                 pass
@@ -1452,6 +1713,9 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
         print("  x <description> - Add an exception for productive activities")
         print("  Example: x Reading research papers on arxiv.org")
         print("  summary/status/progress - Get current workday summary")
+        print("  todos/todo/list - Show current todo list")
+        print("  done <number> - Mark todo as completed (e.g., 'done 1')")
+        print("  add <text> - Add new todo (e.g., 'add Review code')")
         print("  end/finish/'end workday' - End workday and get full summary")
         if self.debug:
             print("\nRunning in DEBUG mode - detailed logging enabled")
@@ -1494,6 +1758,10 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
                         if not self.test_mode:
                             print(f"📝 Activity: {category.title()}")
                         self.log_activity(category, description)
+                        
+                        # AI suggestions for todo updates (only occasionally, not every check)
+                        if not self.test_mode and self.daily_todos and len(self.activity_log) % 3 == 0:  # Every 3rd check
+                            self.suggest_todo_updates(description)
                         
                         # Still check for interventions if it's unproductive
                         unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
