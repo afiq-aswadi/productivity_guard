@@ -900,8 +900,7 @@ Recent Activity Log:
 
     def save_workday_summary_to_file(self):
         """Save the complete workday summary to a separate file."""
-        if not self.workday_active:
-            return
+        # Remove workday_active check - we should be able to save summary even after workday ends
 
         # Generate the summary data first
         current_time = datetime.now()
@@ -952,9 +951,9 @@ Recent Activity Log:
         neutral_categories = ['BREAKS', 'SYSTEM']
         unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
 
-        productive_time = sum(self.activity_categories[cat] for cat in productive_categories)
-        neutral_time = sum(self.activity_categories[cat] for cat in neutral_categories)
-        unproductive_time = sum(self.activity_categories[cat] for cat in unproductive_categories)
+        productive_time = sum(self.activity_categories.get(cat, 0) for cat in productive_categories)
+        neutral_time = sum(self.activity_categories.get(cat, 0) for cat in neutral_categories)
+        unproductive_time = sum(self.activity_categories.get(cat, 0) for cat in unproductive_categories)
         total_tracked_time = productive_time + neutral_time + unproductive_time
 
         productivity_score = 5  # Default score
