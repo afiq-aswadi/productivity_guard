@@ -63,9 +63,10 @@ Create a `.env` file in the project directory:
 ```bash
 echo "OPENROUTER_API_KEY=your_api_key_here" > .env
 echo "OPENROUTER_APP_NAME=productivity-guard" >> .env
+echo "DISABLE_SOUND=false" >> .env
 ```
 
-Replace `your_api_key_here` with your actual OpenRouter API key.
+Replace `your_api_key_here` with your actual OpenRouter API key. Set `DISABLE_SOUND=true` if you want to prevent notification sounds and popups.
 
 ### 4. Run the App
 
@@ -78,6 +79,9 @@ python productivity_guard.py --test
 
 # Enable debug mode for detailed logging
 python productivity_guard.py --debug
+
+# Disable notification sounds (prevents popups)
+python productivity_guard.py --disable-sound
 ```
 
 That's it! The app will start tracking your workday and categorizing your activities every 2 minutes (or every 10 seconds in test mode).
@@ -210,6 +214,18 @@ On macOS, grant Terminal permission to control your computer:
 You may need to grant screen recording permissions:
 - System Preferences → Privacy & Security → Screen Recording
 - Add Terminal (or your terminal app) to the allowed list
+
+### "pin_memory argument not supported on mps" error
+This is a common issue on Apple Silicon Macs. The app now automatically fixes this by:
+- Forcing EasyOCR to use CPU mode instead of MPS
+- Setting the necessary environment variables
+
+If you still see this error, try updating PyTorch: `pip install --upgrade torch`
+
+### Annoying notification popups
+If you're getting too many system notifications when procrastination is detected:
+- Use `--disable-sound` flag: `python productivity_guard.py --disable-sound`
+- Or set environment variable: `DISABLE_SOUND=true` in your `.env` file
 
 ## Getting Help with the Code
 

@@ -18,6 +18,19 @@ from typing import Any, Dict, List
 import threading
 import queue
 import numpy as np
+import warnings
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+warnings.filterwarnings("ignore", message=".*pin_memory.*")
+warnings.filterwarnings("ignore", message=".*MPS.*")
+
+# Fix pin_memory issue on Apple Silicon (MPS) for EasyOCR/PyTorch
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.0'
+# Disable pin_memory on MPS to prevent UserWarning
+os.environ['PYTORCH_DISABLE_PIN_MEMORY_ON_MPS'] = '1'
+
 try:
     import easyocr
     OCR_AVAILABLE = True
@@ -71,7 +84,7 @@ SYSTEM_PROMPT = detection_prompt
 load_dotenv(find_dotenv())
 
 class ProductivityGuard:
-    def __init__(self, interval=None, debug=False, test_mode=False):
+    def __init__(self, interval=None, debug=False, test_mode=False, disable_sound=False):
         """Initialize ProductivityGuard with a checking interval in seconds."""
         # LLMClient will automatically use OPENROUTER_API_KEY from environment
 
@@ -79,6 +92,9 @@ class ProductivityGuard:
         self.interval = interval or int(os.getenv('CHECK_INTERVAL', 120))
         if debug:
             self.interval = 10  # Override interval in debug mode
+            
+        # Sound notification settings
+        self.disable_sound = disable_sound or os.getenv('DISABLE_SOUND', 'false').lower() == 'true'
 
         # Check for API key
         api_key = os.getenv("OPENROUTER_API_KEY")
@@ -143,8 +159,15 @@ class ProductivityGuard:
         if OCR_AVAILABLE:
             try:
                 if OCR_TYPE == "easyocr":
-                    self.ocr_reader = easyocr.Reader(['en'])
-                    self.debug_log("EasyOCR initialized successfully")
+                    # Try GPU first, fallback to CPU if needed
+                    try:
+                        self.ocr_reader = easyocr.Reader(['en'], gpu=True)
+                        self.debug_log("EasyOCR initialized successfully (GPU mode)")
+                    except Exception as gpu_error:
+                        self.debug_log(f"GPU initialization failed: {gpu_error}, falling back to CPU")
+                        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+                        self.ocr_reader = easyocr.Reader(['en'], gpu=False)
+                        self.debug_log("EasyOCR initialized successfully (CPU mode)")
                 elif OCR_TYPE == "pytesseract":
                     # Test pytesseract availability
                     pytesseract.image_to_string(Image.new('RGB', (10, 10)))
@@ -438,6 +461,9 @@ class ProductivityGuard:
             self.debug_log("No screenshots available to check")
             return False
 
+        # Check if budget mode is enabled
+        budget_mode = os.getenv('BUDGET_MODE', 'false').lower() == 'true'
+        
         # Step 1: Quick check with Flash (always print reasoning)
         flash_model = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash')
         self.debug_log("Step 1: Checking with Flash model...")
@@ -451,6 +477,12 @@ class ProductivityGuard:
             # Flash says not procrastinating, we're done
             self.debug_log("Flash says not procrastinating, skipping Pro check")
             return False
+        
+        # If budget mode is enabled, skip Pro model and use Flash result
+        if budget_mode:
+            self.debug_log("Budget mode enabled - using Flash result only")
+            print(f"\nFlash (Budget mode) response: {flash_response}")
+            return flash_result
         
         # Step 2: Flash detected procrastination, verify with Pro + reasoning
         pro_model = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
@@ -758,7 +790,13 @@ Recent Activity Log:
 """
 
         try:
-            model_name = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
+            # Use Flash model if budget mode is enabled
+            budget_mode = os.getenv('BUDGET_MODE', 'false').lower() == 'true'
+            if budget_mode:
+                model_name = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash')
+            else:
+                model_name = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
+            
             completion = self.client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -1283,8 +1321,9 @@ Only suggest obvious completions or important additions. Be conservative.
                 # Get the terminal app name
                 terminal_app = os.environ.get('TERM_PROGRAM', 'Terminal')
 
-                # First play a notification sound to get attention
-                subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                # First play a notification sound to get attention (if not disabled)
+                if not self.disable_sound:
+                    subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
 
                 # Check if yabai is available for tiling window manager support
                 yabai_available = False
@@ -1421,17 +1460,19 @@ Only suggest obvious completions or important additions. Be conservative.
                 if success:
                     # Give the terminal a moment to open/activate
                     time.sleep(0.5)
-                    # Play sound again to ensure attention
-                    subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                    # Play sound again to ensure attention (if not disabled)
+                    if not self.disable_sound:
+                        subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
                 else:
                     # If all attempts fail, print visible marker and multiple sounds
                     print("\n" + "="*80)
                     print("🚨 PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW 🚨")
                     print("="*80 + "\n")
-                    # Play multiple sounds to get attention
-                    for _ in range(3):
-                        subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
-                        time.sleep(0.3)
+                    # Play multiple sounds to get attention (if not disabled)
+                    if not self.disable_sound:
+                        for _ in range(3):
+                            subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                            time.sleep(0.3)
             else:
                 self.debug_log("Window management not implemented for this platform")
                 print("\n" + "="*80)
@@ -1443,7 +1484,7 @@ Only suggest obvious completions or important additions. Be conservative.
             print("\n" + "="*80)
             print("🚨 PROCRASTINATION DETECTED - PLEASE SWITCH TO THIS WINDOW 🚨")
             print("="*80 + "\n")
-            if sys.platform == 'darwin':
+            if sys.platform == 'darwin' and not self.disable_sound:
                 for _ in range(3):
                     subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
                     time.sleep(0.3)
@@ -1506,7 +1547,11 @@ Only suggest obvious completions or important additions. Be conservative.
                 messages.append({"role": "user", "content": user_input})
 
                 # Get response from Gemini
-                pro_model = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
+                budget_mode = os.getenv('BUDGET_MODE', 'false').lower() == 'true'
+                if budget_mode:
+                    pro_model = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash')
+                else:
+                    pro_model = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
                 
                 # Prepare context for first message
                 context_prompt = ""
@@ -1789,6 +1834,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with detailed logging')
     parser.add_argument('--test', action='store_true', help='Run in test mode with simulated activities')
     parser.add_argument('--interval', type=int, help='Check interval in seconds (default: 120, test mode: 10)')
+    parser.add_argument('--disable-sound', action='store_true', help='Disable notification sounds to prevent popups')
     args = parser.parse_args()
     
     # Set interval for test mode
@@ -1796,5 +1842,5 @@ if __name__ == "__main__":
     if args.test and not interval:
         interval = 10  # Faster interval for testing
     
-    guard = ProductivityGuard(interval=interval, debug=args.debug, test_mode=args.test)
+    guard = ProductivityGuard(interval=interval, debug=args.debug, test_mode=args.test, disable_sound=args.disable_sound)
     guard.run() 

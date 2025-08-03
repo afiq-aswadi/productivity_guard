@@ -24,5 +24,6 @@ guard() {
     
     # Run ProductivityGuard
     echo "Starting ProductivityGuard..."
+    echo "Tip: Use --disable-sound to prevent notification popups"
     python productivity_guard.py "$@"
 } 
