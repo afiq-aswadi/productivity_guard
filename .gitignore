@@ -37,6 +37,7 @@ coverage.xml
 # Project specific
 .env
 debug_screenshots/
+data/
 *.log
 
 # OS

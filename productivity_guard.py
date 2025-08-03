@@ -48,6 +48,8 @@ def load_prompt(filename):
 # Load prompts from files
 detection_prompt = load_prompt('detection_prompt.md')
 intervention_prompt = load_prompt('intervention_prompt.md')
+activity_categorization_prompt = load_prompt('activity_categorization_prompt.md')
+workday_summary_prompt = load_prompt('workday_summary_prompt.md')
 
 # Add OCR note if available
 ocr_note = (
@@ -69,7 +71,7 @@ SYSTEM_PROMPT = detection_prompt
 load_dotenv(find_dotenv())
 
 class ProductivityGuard:
-    def __init__(self, interval=None, debug=False):
+    def __init__(self, interval=None, debug=False, test_mode=False):
         """Initialize ProductivityGuard with a checking interval in seconds."""
         # LLMClient will automatically use OPENROUTER_API_KEY from environment
 
@@ -109,6 +111,27 @@ class ProductivityGuard:
         self.input_queue = queue.Queue()
         self.stop_monitoring = False
         self.in_intervention = False
+
+        # Workday tracking
+        self.workday_start_time = datetime.now()
+        self.activity_log = []  # List of activity entries with timestamps
+        self.last_hourly_summary = datetime.now().replace(minute=0, second=0, microsecond=0)
+        self.workday_active = True
+        self.activity_categories = {
+            'CODING': 0, 'STUDYING': 0, 'MEETINGS': 0, 'COMMUNICATION': 0, 
+            'PLANNING': 0, 'WRITING': 0, 'BREAKS': 0, 'SYSTEM': 0,
+            'SOCIAL_MEDIA': 0, 'ENTERTAINMENT': 0, 'DISTRACTION': 0
+        }
+        self.current_activity_start = datetime.now()
+        self.current_activity = None
+
+        # Test mode settings
+        self.test_mode = test_mode
+        self.test_activities = []  # Predefined activities for testing
+        self.test_index = 0
+
+        # Daily logging
+        self.setup_daily_logging()
 
         # Initialize OCR reader if available
         self.ocr_reader = None
@@ -442,6 +465,580 @@ class ProductivityGuard:
             self.debug_log("Pro disagrees with Flash: not procrastinating")
             
         return pro_result
+
+    def simulate_activity_categorization(self):
+        """Simulate activity categorization for testing purposes."""
+        if not self.test_activities:
+            # Default test activities that simulate a workday
+            self.test_activities = [
+                ('CODING', 'Working on Python script'),
+                ('CODING', 'Debugging application'),
+                ('SOCIAL_MEDIA', 'Checking Twitter'),
+                ('CODING', 'Writing unit tests'),
+                ('BREAKS', 'Coffee break'),
+                ('STUDYING', 'Reading documentation'),
+                ('ENTERTAINMENT', 'Watching YouTube'),
+                ('CODING', 'Code review'),
+                ('MEETINGS', 'Team standup'),
+                ('DISTRACTION', 'Random browsing'),
+                ('CODING', 'Implementing feature'),
+                ('WRITING', 'Writing documentation'),
+            ]
+
+        if self.test_index < len(self.test_activities):
+            activity = self.test_activities[self.test_index]
+            self.test_index += 1
+            return activity[0], activity[1]
+        else:
+            # Cycle through activities
+            self.test_index = 0
+            activity = self.test_activities[self.test_index]
+            self.test_index += 1
+            return activity[0], activity[1]
+
+    def categorize_activity(self, screenshots, extracted_texts=None):
+        """Categorize the current activity instead of just checking procrastination."""
+        if not screenshots:
+            self.debug_log("No screenshots available to categorize")
+            return None, ""
+
+        try:
+            # Use the activity categorization prompt
+            prompt_text = activity_categorization_prompt
+
+            # Add exceptions if any exist
+            if self.productivity_exceptions:
+                exceptions_text = "\n\nNOTE: The following activities are confirmed as productive for this user:\n" + "\n".join(self.productivity_exceptions)
+                prompt_text += exceptions_text
+
+            # Add extracted text if available
+            if OCR_AVAILABLE and extracted_texts:
+                text_content = []
+                for i, text in enumerate(extracted_texts, 1):
+                    if text.strip():
+                        text_content.append(f"Monitor {i} text content: {text}")
+
+                if text_content:
+                    prompt_text += "\n\nExtracted text from screens:\n" + "\n\n".join(text_content)
+
+            # Create message content with all screenshots
+            content: List[Dict[str, Any]] = [{
+                "type": "text", 
+                "text": prompt_text
+            }]
+
+            # Add each screenshot as a separate image
+            for i, screenshot in enumerate(screenshots, 1):
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{screenshot}"
+                    }
+                })
+
+            openai_messages = [
+                {
+                    "role": "system",
+                    "content": activity_categorization_prompt
+                },
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
+
+            # Show loading feedback
+            if not self.in_intervention:
+                print("🔍 Categorizing activity... ", end='', flush=True)
+
+            # Make the API call
+            model_name = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash')
+            completion = self.client.chat.completions.create(
+                model=model_name,
+                messages=openai_messages
+            )
+
+            # Clear loading message
+            if not self.in_intervention:
+                print("\r" + " " * 30 + "\r", end='', flush=True)
+
+            response = completion.choices[0].message.content.strip()
+            self.debug_log(f"Activity categorization response: {response}")
+
+            # Extract category from response
+            category = None
+            for line in response.split('\n'):
+                if line.strip().startswith('CATEGORY:'):
+                    category = line.split('CATEGORY:')[1].strip().upper()
+                    break
+
+            return category, response
+
+        except Exception as e:
+            self.debug_log(f"Error categorizing activity: {e}")
+            return None, ""
+
+    def log_activity(self, category, description=""):
+        """Log an activity with timestamp and update time tracking."""
+        if not self.workday_active:
+            return
+
+        current_time = datetime.now()
+        
+        # If we have a previous activity, calculate its duration and add to totals
+        if self.current_activity and self.current_activity_start:
+            duration = (current_time - self.current_activity_start).total_seconds()
+            if self.current_activity in self.activity_categories:
+                self.activity_categories[self.current_activity] += duration
+
+        # Log the activity
+        activity_entry = {
+            'timestamp': current_time,
+            'category': category,
+            'description': description,
+            'duration_start': current_time
+        }
+        self.activity_log.append(activity_entry)
+
+        # Update current activity tracking
+        self.current_activity = category
+        self.current_activity_start = current_time
+
+        # Log to file as well
+        self.log_activity_to_file(category, description)
+
+        self.debug_log(f"Logged activity: {category} - {description}")
+
+    def check_hourly_summary(self):
+        """Check if it's time for an hourly summary and generate one if needed."""
+        current_time = datetime.now()
+        current_hour = current_time.replace(minute=0, second=0, microsecond=0)
+        
+        if current_hour > self.last_hourly_summary:
+            self.generate_hourly_summary()
+            self.last_hourly_summary = current_hour
+
+    def generate_hourly_summary(self):
+        """Generate and display an hourly productivity summary."""
+        if not self.workday_active:
+            return
+
+        current_time = datetime.now()
+        hours_worked = (current_time - self.workday_start_time).total_seconds() / 3600
+
+        print(f"\n⏰ HOURLY UPDATE - {current_time.strftime('%H:%M')}")
+        print(f"📅 Workday duration: {hours_worked:.1f} hours")
+        
+        # Calculate total productive vs unproductive time
+        productive_categories = ['CODING', 'STUDYING', 'MEETINGS', 'COMMUNICATION', 'PLANNING', 'WRITING']
+        neutral_categories = ['BREAKS', 'SYSTEM']
+        unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
+
+        productive_time = sum(self.activity_categories[cat] for cat in productive_categories)
+        neutral_time = sum(self.activity_categories[cat] for cat in neutral_categories)
+        unproductive_time = sum(self.activity_categories[cat] for cat in unproductive_categories)
+        total_time = productive_time + neutral_time + unproductive_time
+
+        if total_time > 0:
+            productive_pct = (productive_time / total_time) * 100
+            print(f"🎯 Productivity: {productive_pct:.1f}% productive, {(neutral_time/total_time)*100:.1f}% neutral, {(unproductive_time/total_time)*100:.1f}% unproductive")
+
+        # Show top activities
+        top_activities = sorted(self.activity_categories.items(), key=lambda x: x[1], reverse=True)[:3]
+        if top_activities[0][1] > 0:
+            print("📊 Top activities:")
+            for category, seconds in top_activities:
+                if seconds > 0:
+                    minutes = seconds / 60
+                    print(f"   • {category.title()}: {minutes:.0f} minutes")
+
+        print()
+
+        # Also save to file
+        self.save_hourly_summary_to_file()
+
+    def generate_workday_summary(self):
+        """Generate a comprehensive end-of-workday summary with AI analysis."""
+        if not self.workday_active:
+            return
+
+        # Finalize current activity
+        if self.current_activity and self.current_activity_start:
+            duration = (datetime.now() - self.current_activity_start).total_seconds()
+            if self.current_activity in self.activity_categories:
+                self.activity_categories[self.current_activity] += duration
+
+        current_time = datetime.now()
+        total_workday_duration = current_time - self.workday_start_time
+        total_seconds = total_workday_duration.total_seconds()
+
+        print(f"\n🎯 WORKDAY COMPLETE - {current_time.strftime('%Y-%m-%d %H:%M')}")
+        print(f"⏱️  Duration: {total_workday_duration}")
+
+        # Prepare data for AI summary
+        time_breakdown = {}
+        for category, seconds in self.activity_categories.items():
+            if seconds > 0:
+                hours = seconds / 3600
+                minutes = (seconds % 3600) / 60
+                percentage = (seconds / total_seconds) * 100 if total_seconds > 0 else 0
+                time_breakdown[category] = {
+                    'hours': hours,
+                    'minutes': minutes,
+                    'total_minutes': seconds / 60,
+                    'percentage': percentage
+                }
+
+        # Generate AI summary
+        try:
+            summary_data = {
+                'workday_date': current_time.strftime('%Y-%m-%d'),
+                'start_time': self.workday_start_time.strftime('%H:%M'),
+                'end_time': current_time.strftime('%H:%M'),
+                'total_duration': str(total_workday_duration),
+                'time_breakdown': time_breakdown,
+                'activity_log_summary': self._get_activity_log_summary()
+            }
+
+            ai_summary = self._generate_ai_summary(summary_data)
+            print(ai_summary)
+
+        except Exception as e:
+            self.debug_log(f"Error generating AI summary: {e}")
+            # Fallback to basic summary
+            self._generate_basic_summary(time_breakdown, total_workday_duration)
+
+    def _get_activity_log_summary(self):
+        """Get a condensed summary of the activity log for AI analysis."""
+        if not self.activity_log:
+            return "No activities logged."
+
+        summary_entries = []
+        for entry in self.activity_log[-10:]:  # Last 10 activities
+            time_str = entry['timestamp'].strftime('%H:%M')
+            summary_entries.append(f"{time_str}: {entry['category']} - {entry.get('description', '')}")
+        
+        return "\n".join(summary_entries)
+
+    def _generate_ai_summary(self, summary_data):
+        """Generate AI-powered workday summary and advice."""
+        # Format the data for the AI prompt
+        time_breakdown_text = []
+        for category, data in summary_data['time_breakdown'].items():
+            hours = int(data['hours'])
+            minutes = int(data['minutes'])
+            time_breakdown_text.append(
+                f"- **{category.title()}:** {hours} hours {minutes} minutes - {data['percentage']:.1f}%"
+            )
+
+        prompt = f"""
+{workday_summary_prompt}
+
+WORKDAY DATA:
+Date: {summary_data['workday_date']}
+Duration: {summary_data['start_time']} - {summary_data['end_time']} ({summary_data['total_duration']})
+
+Time Breakdown:
+{chr(10).join(time_breakdown_text)}
+
+Recent Activity Log:
+{summary_data['activity_log_summary']}
+"""
+
+        try:
+            model_name = os.getenv('BEST_MODEL', 'google/gemini-2.5-pro')
+            completion = self.client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a productivity coach. Analyze the workday data and provide a structured summary with actionable advice."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+
+            return completion.choices[0].message.content.strip()
+
+        except Exception as e:
+            self.debug_log(f"Error generating AI summary: {e}")
+            return "Error generating AI summary. See basic summary above."
+
+    def _generate_basic_summary(self, time_breakdown, total_duration):
+        """Generate a basic fallback summary without AI."""
+        print("\n📊 WORKDAY SUMMARY")
+        print(f"⏱️  Total time: {total_duration}")
+        
+        if time_breakdown:
+            print("\n🕐 Time breakdown:")
+            for category, data in sorted(time_breakdown.items(), key=lambda x: x[1]['total_minutes'], reverse=True):
+                hours = int(data['hours'])
+                minutes = int(data['minutes'])
+                print(f"   • {category.title()}: {hours}h {minutes}m ({data['percentage']:.1f}%)")
+
+    def end_workday(self):
+        """End the current workday and generate summary."""
+        if not self.workday_active:
+            print("Workday is not currently active.")
+            return
+
+        print("\n🎯 Ending workday...")
+        self.workday_active = False
+        self.generate_workday_summary()
+        
+        # Stop monitoring
+        self.stop_monitoring = True
+        
+        # Save final summary to file
+        self.save_workday_summary_to_file()
+        
+        print("\nProductivityGuard stopped. Have a great rest of your day! 🌟")
+
+    def setup_daily_logging(self):
+        """Set up daily logging files and folders."""
+        # Create data directories if they don't exist
+        self.data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+        self.logs_dir = os.path.join(self.data_dir, 'logs')
+        self.summaries_dir = os.path.join(self.data_dir, 'summaries')
+        
+        os.makedirs(self.logs_dir, exist_ok=True)
+        os.makedirs(self.summaries_dir, exist_ok=True)
+        
+        # Set up daily log file
+        today = datetime.now().strftime('%Y-%m-%d')
+        self.daily_log_file = os.path.join(self.logs_dir, f'{today}_activity_log.md')
+        self.daily_summary_file = os.path.join(self.summaries_dir, f'{today}_workday_summary.md')
+        
+        # Initialize daily log if it doesn't exist
+        if not os.path.exists(self.daily_log_file):
+            self.initialize_daily_log()
+        else:
+            # If log exists, we're resuming - log the resume
+            self.append_to_daily_log(f"\n## 🔄 Session Resumed - {datetime.now().strftime('%H:%M:%S')}\n")
+
+    def initialize_daily_log(self):
+        """Create the initial daily activity log file."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        start_time = self.workday_start_time.strftime('%H:%M:%S')
+        
+        initial_content = f"""# 📅 Daily Activity Log - {today}
+
+**Workday Started:** {start_time}
+**Goal:** Track activities and maintain productivity throughout the day
+
+## 🎯 Today's Focus Areas
+<!-- Add your main goals for the day here -->
+
+## 📊 Activity Timeline
+
+### Session Started - {start_time}
+"""
+        
+        with open(self.daily_log_file, 'w', encoding='utf-8') as f:
+            f.write(initial_content)
+        
+        self.debug_log(f"Daily log initialized: {self.daily_log_file}")
+
+    def append_to_daily_log(self, content):
+        """Append content to the daily log file."""
+        try:
+            with open(self.daily_log_file, 'a', encoding='utf-8') as f:
+                f.write(content)
+        except Exception as e:
+            self.debug_log(f"Error writing to daily log: {e}")
+
+    def log_activity_to_file(self, category, description=""):
+        """Log an activity to the daily log file."""
+        timestamp = datetime.now().strftime('%H:%M')
+        
+        # Create activity entry
+        activity_entry = f"- **{timestamp}** - {category.title()}"
+        if description:
+            activity_entry += f": {description}"
+        activity_entry += "\n"
+        
+        self.append_to_daily_log(activity_entry)
+
+    def save_hourly_summary_to_file(self):
+        """Save hourly summary to the daily log file."""
+        current_time = datetime.now()
+        hours_worked = (current_time - self.workday_start_time).total_seconds() / 3600
+        
+        # Calculate productivity stats
+        productive_categories = ['CODING', 'STUDYING', 'MEETINGS', 'COMMUNICATION', 'PLANNING', 'WRITING']
+        neutral_categories = ['BREAKS', 'SYSTEM']
+        unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
+
+        productive_time = sum(self.activity_categories[cat] for cat in productive_categories)
+        neutral_time = sum(self.activity_categories[cat] for cat in neutral_categories)
+        unproductive_time = sum(self.activity_categories[cat] for cat in unproductive_categories)
+        total_time = productive_time + neutral_time + unproductive_time
+
+        summary_content = f"""
+### ⏰ Hourly Update - {current_time.strftime('%H:%M')}
+- **Duration**: {hours_worked:.1f} hours
+"""
+        
+        if total_time > 0:
+            productive_pct = (productive_time / total_time) * 100
+            summary_content += f"- **Productivity**: {productive_pct:.1f}% productive, {(neutral_time/total_time)*100:.1f}% neutral, {(unproductive_time/total_time)*100:.1f}% unproductive\n"
+
+        # Show top activities
+        top_activities = sorted(self.activity_categories.items(), key=lambda x: x[1], reverse=True)[:3]
+        if top_activities[0][1] > 0:
+            summary_content += "- **Top Activities**:\n"
+            for category, seconds in top_activities:
+                if seconds > 0:
+                    minutes = seconds / 60
+                    summary_content += f"  - {category.title()}: {minutes:.0f} minutes\n"
+
+        summary_content += "\n"
+        self.append_to_daily_log(summary_content)
+
+    def save_workday_summary_to_file(self):
+        """Save the complete workday summary to a separate file."""
+        if not self.workday_active:
+            return
+
+        # Generate the summary data first
+        current_time = datetime.now()
+        total_workday_duration = current_time - self.workday_start_time
+        total_seconds = total_workday_duration.total_seconds()
+
+        # Finalize current activity
+        if self.current_activity and self.current_activity_start:
+            duration = (current_time - self.current_activity_start).total_seconds()
+            if self.current_activity in self.activity_categories:
+                self.activity_categories[self.current_activity] += duration
+
+        # Prepare time breakdown
+        time_breakdown = {}
+        for category, seconds in self.activity_categories.items():
+            if seconds > 0:
+                hours = seconds / 3600
+                minutes = (seconds % 3600) / 60
+                percentage = (seconds / total_seconds) * 100 if total_seconds > 0 else 0
+                time_breakdown[category] = {
+                    'hours': hours,
+                    'minutes': minutes,
+                    'total_minutes': seconds / 60,
+                    'percentage': percentage
+                }
+
+        # Create summary content
+        today = current_time.strftime('%Y-%m-%d')
+        summary_content = f"""# 🎯 Workday Summary - {today}
+
+**Date:** {current_time.strftime('%Y-%m-%d')}
+**Duration:** {self.workday_start_time.strftime('%H:%M')} - {current_time.strftime('%H:%M')} ({total_workday_duration})
+**Total Time:** {total_workday_duration}
+
+## 📊 Time Breakdown
+
+"""
+
+        # Add time breakdown
+        if time_breakdown:
+            for category, data in sorted(time_breakdown.items(), key=lambda x: x[1]['total_minutes'], reverse=True):
+                hours = int(data['hours'])
+                minutes = int(data['minutes'])
+                summary_content += f"- **{category.title()}:** {hours}h {minutes}m ({data['percentage']:.1f}%)\n"
+
+        # Calculate productivity metrics
+        productive_categories = ['CODING', 'STUDYING', 'MEETINGS', 'COMMUNICATION', 'PLANNING', 'WRITING']
+        neutral_categories = ['BREAKS', 'SYSTEM']
+        unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
+
+        productive_time = sum(self.activity_categories[cat] for cat in productive_categories)
+        neutral_time = sum(self.activity_categories[cat] for cat in neutral_categories)
+        unproductive_time = sum(self.activity_categories[cat] for cat in unproductive_categories)
+        total_tracked_time = productive_time + neutral_time + unproductive_time
+
+        productivity_score = 5  # Default score
+        if total_tracked_time > 0:
+            productive_pct = (productive_time / total_tracked_time) * 100
+            productivity_score = min(10, max(1, (productive_pct / 10)))  # Simple scoring
+            
+            summary_content += f"""
+## 🎯 Productivity Metrics
+
+- **Overall Productivity:** {productive_pct:.1f}%
+- **Productivity Score:** {productivity_score:.1f}/10
+- **Productive Time:** {productive_time/3600:.1f} hours
+- **Neutral Time:** {neutral_time/3600:.1f} hours  
+- **Unproductive Time:** {unproductive_time/3600:.1f} hours
+
+"""
+
+        # Add activity log summary
+        summary_content += f"""## 📝 Activity Summary
+
+Recent activities from today's log:
+"""
+        
+        # Add last 10 activities
+        for entry in self.activity_log[-10:]:
+            time_str = entry['timestamp'].strftime('%H:%M')
+            summary_content += f"- **{time_str}** - {entry['category'].title()}"
+            if entry.get('description'):
+                summary_content += f": {entry['description']}"
+            summary_content += "\n"
+
+        # Try to get AI-generated insights
+        try:
+            ai_insights = self._generate_ai_summary({
+                'workday_date': today,
+                'start_time': self.workday_start_time.strftime('%H:%M'),
+                'end_time': current_time.strftime('%H:%M'),
+                'total_duration': str(total_workday_duration),
+                'time_breakdown': time_breakdown,
+                'activity_log_summary': self._get_activity_log_summary()
+            })
+            summary_content += f"""
+## 🤖 AI Analysis & Recommendations
+
+{ai_insights}
+"""
+        except Exception as e:
+            self.debug_log(f"Could not generate AI insights: {e}")
+            summary_content += f"""
+## 💡 Key Insights
+
+- Workday completed successfully
+- Total productive time: {productive_time/3600:.1f} hours
+- Consider reviewing the time breakdown above for improvement opportunities
+
+"""
+
+        summary_content += f"""
+---
+*Generated by ProductivityGuard on {current_time.strftime('%Y-%m-%d at %H:%M')}*
+"""
+
+        # Write to summary file
+        try:
+            with open(self.daily_summary_file, 'w', encoding='utf-8') as f:
+                f.write(summary_content)
+            
+            print(f"\n📄 Workday summary saved to: {self.daily_summary_file}")
+            
+            # Also append summary to daily log
+            self.append_to_daily_log(f"""
+## 🎯 End of Day Summary - {current_time.strftime('%H:%M')}
+
+**Final Duration:** {total_workday_duration}
+**Productivity Score:** {productivity_score:.1f}/10
+
+Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
+
+---
+""")
+            
+        except Exception as e:
+            self.debug_log(f"Error saving workday summary: {e}")
 
     def bring_terminal_to_front(self):
         """Bring the terminal window to front and play notification sound."""
@@ -779,9 +1376,13 @@ class ProductivityGuard:
                 if self.in_intervention:
                     self.input_queue.put(user_input)
                 else:
-                    # Handle 'x' commands during normal monitoring
+                    # Handle commands during normal monitoring
                     if user_input.lower().startswith("x "):
                         self.input_queue.put(user_input)
+                    elif user_input.lower() in ["end", "end workday", "finish", "stop workday"]:
+                        self.input_queue.put("end_workday")
+                    elif user_input.lower() in ["summary", "status", "progress"]:
+                        self.input_queue.put("get_summary")
                     else:
                         # For other inputs during monitoring, just put in queue
                         self.input_queue.put(user_input)
@@ -801,7 +1402,7 @@ class ProductivityGuard:
             try:
                 user_input = self.input_queue.get(timeout=0.5)
 
-                # Handle x  command for exceptions
+                # Handle x command for exceptions
                 if user_input.lower().startswith("x "):
                     exception_text = user_input[2:].strip()
                     if exception_text:
@@ -810,6 +1411,15 @@ class ProductivityGuard:
                         print(f"Total exceptions: {len(self.productivity_exceptions)}")
                     else:
                         print("No exception text provided after 'x '")
+                
+                # Handle end workday command
+                elif user_input == "end_workday":
+                    self.end_workday()
+                    return False  # Signal to exit the wait loop
+                
+                # Handle summary command
+                elif user_input == "get_summary":
+                    self.generate_hourly_summary()
 
             except queue.Empty:
                 # No input received, continue waiting
@@ -821,8 +1431,12 @@ class ProductivityGuard:
 
     def run(self):
         """Main loop to monitor productivity."""
-        print(f"ProductivityGuard is running. First check in 30 seconds, then every {self.interval} seconds...")
-        print("Note: You may need to grant Screen Recording permission in System Preferences > Security & Privacy > Privacy")
+        if self.test_mode:
+            print("🧪 RUNNING IN TEST MODE - Simulating workday activities")
+            print(f"Test activities will be generated every {self.interval} seconds...")
+        else:
+            print(f"ProductivityGuard is running. First check in 30 seconds, then every {self.interval} seconds...")
+            print("Note: You may need to grant Screen Recording permission in System Preferences > Security & Privacy > Privacy")
 
         if OCR_AVAILABLE:
             print(f"OCR enabled using {OCR_TYPE} - text content from screens will be extracted for analysis")
@@ -830,9 +1444,16 @@ class ProductivityGuard:
             print("OCR not available - only visual analysis will be performed")
             print("To enable OCR, install: pip install easyocr (recommended) or pip install pytesseract")
 
+        print("\n🎯 WORKDAY TRACKING ACTIVE")
+        print(f"Started: {self.workday_start_time.strftime('%Y-%m-%d %H:%M')}")
+        if not self.test_mode:
+            print(f"📝 Daily log: {os.path.basename(self.daily_log_file)}")
+            print(f"📊 Summary will be saved to: {os.path.basename(self.daily_summary_file)}")
         print("\nCommands during monitoring:")
         print("  x <description> - Add an exception for productive activities")
         print("  Example: x Reading research papers on arxiv.org")
+        print("  summary/status/progress - Get current workday summary")
+        print("  end/finish/'end workday' - End workday and get full summary")
         if self.debug:
             print("\nRunning in DEBUG mode - detailed logging enabled")
             print(f"Debug screenshots will be saved to: {self.debug_dir}")
@@ -841,19 +1462,50 @@ class ProductivityGuard:
         input_thread = threading.Thread(target=self.input_thread, daemon=True)
         input_thread.start()
 
-        # Wait 30 seconds before first check with input monitoring
-        print("\nWaiting 30 seconds before first check...")
-        self.wait_with_input_check(30)
+        # Wait before first check with input monitoring
+        if self.test_mode:
+            print("\nStarting test mode immediately...")
+            self.wait_with_input_check(2)  # Short wait in test mode
+        else:
+            print("\nWaiting 30 seconds before first check...")
+            self.wait_with_input_check(30)
 
-        while not self.stop_monitoring:
+        while not self.stop_monitoring and self.workday_active:
             try:
                 self.debug_log("\n--- Starting new check ---")
-                screenshots, extracted_texts = self.take_screenshot()
-                if screenshots and self.check_procrastination(screenshots, extracted_texts):
-                    self.debug_log("Procrastination detected! Starting intervention...")
-                    self.start_intervention()
+                if self.test_mode:
+                    screenshots, extracted_texts = [], []  # No actual screenshots in test mode
                 else:
-                    self.debug_log("No procrastination detected")
+                    screenshots, extracted_texts = self.take_screenshot()
+                
+                # Check if workday is active before processing
+                if not self.workday_active:
+                    break
+                
+                if screenshots or self.test_mode:
+                    if self.test_mode:
+                        # Use simulated activities for testing
+                        category, description = self.simulate_activity_categorization()
+                        print(f"🧪 TEST MODE - Simulated activity: {category.title()} - {description}")
+                    else:
+                        # Categorize activity instead of just checking procrastination
+                        category, description = self.categorize_activity(screenshots, extracted_texts)
+                    
+                    if category:
+                        if not self.test_mode:
+                            print(f"📝 Activity: {category.title()}")
+                        self.log_activity(category, description)
+                        
+                        # Still check for interventions if it's unproductive
+                        unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
+                        if category in unproductive_categories and not self.test_mode:
+                            self.debug_log("Unproductive activity detected! Starting intervention...")
+                            self.start_intervention()
+                    else:
+                        self.debug_log("Could not categorize activity")
+                
+                # Check for hourly summary
+                self.check_hourly_summary()
 
                 self.debug_log(f"Waiting {self.interval} seconds until next check...")
                 self.wait_with_input_check(self.interval)
@@ -866,9 +1518,16 @@ class ProductivityGuard:
                 self.wait_with_input_check(self.interval)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='ProductivityGuard - A Gemini-powered productivity monitor')
+    parser = argparse.ArgumentParser(description='ProductivityGuard - A workday tracking and productivity monitor')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with detailed logging')
+    parser.add_argument('--test', action='store_true', help='Run in test mode with simulated activities')
+    parser.add_argument('--interval', type=int, help='Check interval in seconds (default: 120, test mode: 10)')
     args = parser.parse_args()
     
-    guard = ProductivityGuard(debug=args.debug)
+    # Set interval for test mode
+    interval = args.interval
+    if args.test and not interval:
+        interval = 10  # Faster interval for testing
+    
+    guard = ProductivityGuard(interval=interval, debug=args.debug, test_mode=args.test)
     guard.run() 
