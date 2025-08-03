@@ -402,7 +402,7 @@ class ProductivityGuard:
             return False
 
         # Step 1: Quick check with Flash (always print reasoning)
-        flash_model = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash-preview-05-20')
+        flash_model = os.getenv('MEDIUM_MODEL', 'google/gemini-2.5-flash')
         self.debug_log("Step 1: Checking with Flash model...")
         
         flash_result, flash_response = self._check_with_model(
