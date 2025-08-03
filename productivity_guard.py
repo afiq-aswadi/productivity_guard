@@ -1,7 +1,7 @@
 import os
 import time
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from mss import mss
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
@@ -154,6 +154,39 @@ class ProductivityGuard:
         self.todo_counter = 1  # Counter for todo IDs
         self.setup_daily_todos()
 
+        # Encouragement messages for different situations
+        self.encouragement_messages = {
+            'procrastination': [
+                "💪 You've got this! Let's refocus and tackle what matters most.",
+                "✨ Hey there! Time to channel that energy into something productive.",
+                "🎆 Quick break's over - let's get back to crushing those goals!",
+                "🚀 Ready to turn this moment around? Your future self will thank you!",
+                "🎯 Focus time! What's the most important thing you could work on right now?",
+                "⚡ Let's redirect that energy - you're capable of amazing things!",
+                "🌱 Growth happens outside the comfort zone. Let's make progress!"
+            ],
+            'intervention_start': [
+                "No worries, we all drift sometimes! Let's chat and get back on track.",
+                "Hey, happens to the best of us! What's pulling your attention away?",
+                "Time for a quick reset! What were you hoping to accomplish today?",
+                "Let's pause and recalibrate - what's your next productive move?",
+                "No judgment here! Let's figure out how to make the most of your time."
+            ],
+            'good_work': [
+                "🎉 Great work! You're staying focused and making real progress.",
+                "🔥 You're on fire! Keep up that productive momentum.",
+                "✅ Awesome focus! You're building some serious productive habits.",
+                "🏆 Fantastic! You're showing what dedicated work looks like.",
+                "⭐ Stellar work! Your consistency is really paying off."
+            ]
+        }
+        self.last_encouragement_time = datetime.now()
+        
+        # Pomodoro timer state
+        self.pomodoro_active = False
+        self.pomodoro_start_time = None
+        self.pomodoro_duration = 0
+        
         # Initialize OCR reader if available
         self.ocr_reader = None
         if OCR_AVAILABLE:
@@ -193,6 +226,100 @@ class ProductivityGuard:
                     print(f"Data: {data[:100]}... (truncated)")
                 else:
                     print(f"Data: {json.dumps(data, indent=2)}")
+
+    def get_random_encouragement(self, category='procrastination'):
+        """Get a random encouragement message from the specified category."""
+        import random
+        messages = self.encouragement_messages.get(category, self.encouragement_messages['procrastination'])
+        return random.choice(messages)
+
+    def start_pomodoro(self, minutes):
+        """Start a pomodoro timer for the specified number of minutes."""
+        if self.pomodoro_active:
+            print("⏰ Pomodoro timer is already running!")
+            self.show_pomodoro_status()
+            return
+        
+        self.pomodoro_active = True
+        self.pomodoro_start_time = datetime.now()
+        self.pomodoro_duration = minutes * 60  # Convert to seconds
+        
+        print(f"\n🍅 POMODORO TIMER STARTED!")
+        print(f"⏰ Duration: {minutes} minutes")
+        print(f"🎯 Stay focused until {(self.pomodoro_start_time + timedelta(seconds=self.pomodoro_duration)).strftime('%H:%M')}")
+        print("💡 Type 'timer' to check remaining time")
+        print("=" * 50)
+        
+        # Log the pomodoro start
+        self.log_activity_to_file("PLANNING", f"Started {minutes}-minute Pomodoro session")
+
+    def check_pomodoro_timer(self):
+        """Check if pomodoro timer has finished and show alerts."""
+        if not self.pomodoro_active:
+            return
+        
+        current_time = datetime.now()
+        elapsed_seconds = (current_time - self.pomodoro_start_time).total_seconds()
+        
+        if elapsed_seconds >= self.pomodoro_duration:
+            # Timer finished!
+            self.pomodoro_active = False
+            minutes = self.pomodoro_duration // 60
+            
+            print("\n" + "=" * 60)
+            print("🎉 POMODORO COMPLETE! 🎉")
+            print(f"✅ You focused for {minutes} minutes - great job!")
+            print("🌟 Time for a well-deserved break!")
+            print("=" * 60)
+            
+            # Play notification sound if not disabled
+            if not self.disable_sound and sys.platform == 'darwin':
+                for _ in range(3):
+                    subprocess.run(['afplay', '/System/Library/Sounds/Glass.aiff'], check=False)
+                    time.sleep(0.3)
+            
+            # Log completion
+            self.log_activity_to_file("BREAKS", f"Completed {minutes}-minute Pomodoro session")
+            
+            # Show encouragement
+            encouragement = self.get_random_encouragement('good_work')
+            print(f"💬 {encouragement}\n")
+            
+            return True  # Return True to indicate timer completed
+        
+        return False  # Return False to indicate timer still running
+
+
+    
+    def show_pomodoro_status(self):
+        """Show current pomodoro timer status."""
+        if not self.pomodoro_active:
+            print("⏰ No active Pomodoro timer.")
+            return
+        
+        current_time = datetime.now()
+        elapsed_seconds = (current_time - self.pomodoro_start_time).total_seconds()
+        remaining_seconds = max(0, self.pomodoro_duration - elapsed_seconds)
+        
+        if remaining_seconds > 0:
+            remaining_minutes = int(remaining_seconds // 60)
+            remaining_secs = int(remaining_seconds % 60)
+            total_minutes = int(self.pomodoro_duration // 60)
+            elapsed_minutes = int(elapsed_seconds // 60)
+            
+            print(f"\n🍅 POMODORO TIMER ACTIVE")
+            print(f"⏰ Time remaining: {remaining_minutes:02d}:{remaining_secs:02d}")
+            print(f"📊 Progress: {elapsed_minutes}/{total_minutes} minutes")
+            
+            # Show simple progress bar
+            progress = elapsed_seconds / self.pomodoro_duration
+            bar_length = 20
+            filled_length = int(bar_length * progress)
+            bar = "█" * filled_length + "░" * (bar_length - filled_length)
+            print(f"🔥 [{bar}] {progress*100:.1f}%")
+        else:
+            # Timer has finished but hasn't been processed yet
+            self.check_pomodoro_timer()
 
     def save_debug_screenshot(self, img, monitor_index):
         """Save the last 3 screenshots for each monitor in debug mode."""
@@ -265,7 +392,10 @@ class ProductivityGuard:
 
     def take_screenshot(self):
         """Take a screenshot of all monitors using MSS and return them as base64 encoded strings with extracted text."""
-        print("\nTaking screenshot...")  # Always print this message
+
+        
+        print("\n📸 Taking screenshot...")
+        
         self.debug_log("Taking screenshot...")
         try:
             # Get all monitors
@@ -296,6 +426,7 @@ class ProductivityGuard:
                 screenshots.append(encoded_image)
 
             self.debug_log("Screenshots captured successfully")
+    
             return screenshots, extracted_texts
         except Exception as e:
             print(f"Error taking screenshot: {e}")
@@ -424,6 +555,8 @@ class ProductivityGuard:
             # Clear loading message
             if not self.in_intervention:
                 print("\r" + " " * 30 + "\r", end='', flush=True)
+            
+
 
             response = completion.choices[0].message.content.strip()
             self.debug_log(f"Full response from {model_name}: {response}")
@@ -440,8 +573,15 @@ class ProductivityGuard:
             last_line = ''.join(c for c in last_line if c.isalpha())  # Remove all non-letter characters
             is_procrastinating = last_line == 'yes'
 
-            # Print the decision
-            print(f"Decision ({model_name}): {'Procrastinating' if is_procrastinating else 'Working'}")
+            # Print the decision with better formatting, considering pomodoro state
+            status_icon = "⚠️" if is_procrastinating else "✅"
+            status_text = "Procrastinating" if is_procrastinating else "Working"
+            
+            if self.pomodoro_active:
+                # During pomodoro, show decision more subtly to avoid disrupting timer
+                print(f" {status_icon}", end='', flush=True)
+            else:
+                print(f"\n{status_icon} Decision ({model_name}): {status_text}")
 
             # Cache the result with full response
             self.previous_screenshots[cache_key] = (is_procrastinating, response)
@@ -481,7 +621,8 @@ class ProductivityGuard:
         # If budget mode is enabled, skip Pro model and use Flash result
         if budget_mode:
             self.debug_log("Budget mode enabled - using Flash result only")
-            print(f"\nFlash (Budget mode) response: {flash_response}")
+            if not self.pomodoro_active:
+                print(f"\n💡 Flash (Budget mode) response: {flash_response}")
             return flash_result
         
         # Step 2: Flash detected procrastination, verify with Pro + reasoning
@@ -493,8 +634,12 @@ class ProductivityGuard:
             use_reasoning=True, print_reasoning=False
         )
         
-        # Always print Pro's response
-        print(f"\nPro (Gemini 2.5) response: {pro_response}")
+        # Always print Pro's response, but consider pomodoro state
+        if not self.pomodoro_active:
+            print(f"\n🤖 Pro (Gemini 2.5) response: {pro_response}")
+        else:
+            # During pomodoro, just show a simple indicator that analysis completed
+            print("🤖", end='', flush=True)
         
         if pro_result:
             self.debug_log("Both Flash and Pro agree: procrastination detected!")
@@ -598,6 +743,8 @@ class ProductivityGuard:
             # Clear loading message
             if not self.in_intervention:
                 print("\r" + " " * 30 + "\r", end='', flush=True)
+            
+
 
             response = completion.choices[0].message.content.strip()
             self.debug_log(f"Activity categorization response: {response}")
@@ -1500,7 +1647,10 @@ Only suggest obvious completions or important additions. Be conservative.
         print("\n" + "="*60)
         print("🚨 PRODUCTIVITY INTERVENTION 🚨")
         print("="*60)
-        print("You've been caught procrastinating! Let's have a quick chat.")
+        
+        # Use encouraging language instead of accusatory
+        encouragement = self.get_random_encouragement('intervention_start')
+        print(f"💬 {encouragement}")
         
         if self.last_description:
             print(f"\nWhat I observed: {self.last_description}")
@@ -1670,6 +1820,10 @@ Only suggest obvious completions or important additions. Be conservative.
                         self.input_queue.put(user_input)
                     elif user_input.lower().startswith("add "):
                         self.input_queue.put(user_input)
+                    elif user_input.lower().startswith("pomodoro "):
+                        self.input_queue.put(user_input)
+                    elif user_input.lower() in ["pomodoro", "timer", "timer status"]:
+                        self.input_queue.put("pomodoro_status")
                     else:
                         # For other inputs during monitoring, just put in queue
                         self.input_queue.put(user_input)
@@ -1725,9 +1879,26 @@ Only suggest obvious completions or important additions. Be conservative.
                         self.add_todo(todo_text)
                     else:
                         print("❌ No todo text provided. Use 'add [todo text]'")
+                
+                # Handle pomodoro commands
+                elif user_input.lower().startswith("pomodoro "):
+                    try:
+                        minutes = int(user_input[9:].strip())
+                        if 1 <= minutes <= 120:  # Reasonable limit
+                            self.start_pomodoro(minutes)
+                        else:
+                            print("❌ Please enter a time between 1 and 120 minutes")
+                    except ValueError:
+                        print("❌ Invalid time format. Use 'pomodoro [minutes]' (e.g., 'pomodoro 25')")
+                
+                elif user_input == "pomodoro_status":
+                    self.show_pomodoro_status()
 
             except queue.Empty:
                 # No input received, continue waiting
+                # Check pomodoro timer every 0.5 seconds for responsive completion notifications
+                if self.pomodoro_active:
+                    self.check_pomodoro_timer()
                 pass
             except Exception as e:
                 self.debug_log(f"Error processing input: {e}")
@@ -1761,6 +1932,8 @@ Only suggest obvious completions or important additions. Be conservative.
         print("  todos/todo/list - Show current todo list")
         print("  done <number> - Mark todo as completed (e.g., 'done 1')")
         print("  add <text> - Add new todo (e.g., 'add Review code')")
+        print("  pomodoro <minutes> - Start a Pomodoro timer (e.g., 'pomodoro 25')")
+        print("  pomodoro/timer - Check current timer status")
         print("  end/finish/'end workday' - End workday and get full summary")
         if self.debug:
             print("\nRunning in DEBUG mode - detailed logging enabled")
@@ -1801,7 +1974,17 @@ Only suggest obvious completions or important additions. Be conservative.
                     
                     if category:
                         if not self.test_mode:
-                            print(f"📝 Activity: {category.title()}")
+                            if self.pomodoro_active:
+                                # During pomodoro, show activity more subtly
+                                print(f" 📝{category[:3]}", end='', flush=True)
+                            else:
+                                print(f"\n📝 Activity detected: {category.title()}")
+                                if description:
+                                    # Truncate long descriptions for cleaner output
+                                    clean_desc = description.split('\n')[0].strip()[:100]
+                                    if len(clean_desc) < len(description.split('\n')[0].strip()):
+                                        clean_desc += "..."
+                                    print(f"   Details: {clean_desc}")
                         self.log_activity(category, description)
                         
                         # AI suggestions for todo updates (only occasionally, not every check)
@@ -1811,15 +1994,47 @@ Only suggest obvious completions or important additions. Be conservative.
                         # Still check for interventions if it's unproductive
                         unproductive_categories = ['SOCIAL_MEDIA', 'ENTERTAINMENT', 'DISTRACTION']
                         if category in unproductive_categories and not self.test_mode:
-                            self.debug_log("Unproductive activity detected! Starting intervention...")
-                            self.start_intervention()
+                            if self.pomodoro_active:
+                                # During pomodoro, show unproductive warning more subtly first
+                                print(f" 🚨", end='', flush=True)
+                                # But still start intervention since this is important
+                                time.sleep(1)  # Brief pause to let user see the timer state
+                        
+                                print(f"\n\n🚨 Unproductive activity detected: {category.title()}")
+                                # Add encouragement message
+                                encouragement = self.get_random_encouragement('procrastination')
+                                print(f"💬 {encouragement}")
+                                self.debug_log("Unproductive activity detected! Starting intervention...")
+                                self.start_intervention()
+                            else:
+                                print(f"\n🚨 Unproductive activity detected: {category.title()}")
+                                # Add encouragement message
+                                encouragement = self.get_random_encouragement('procrastination')
+                                print(f"💬 {encouragement}")
+                                self.debug_log("Unproductive activity detected! Starting intervention...")
+                                self.start_intervention()
+                        elif category in ['CODING', 'STUDYING', 'MEETINGS', 'COMMUNICATION', 'PLANNING', 'WRITING'] and not self.test_mode:
+                            # Occasionally show positive reinforcement for productive work
+                            current_time = datetime.now()
+                            if (current_time - self.last_encouragement_time).total_seconds() > 3600:  # Once per hour
+                                encouragement = self.get_random_encouragement('good_work')
+                                if self.pomodoro_active:
+                                    # During pomodoro, show encouragement more subtly
+                                    print(f" 🌟", end='', flush=True)
+                                else:
+                                    print(f"\n{encouragement}")
+                                self.last_encouragement_time = current_time
                     else:
                         self.debug_log("Could not categorize activity")
                 
                 # Check for hourly summary
                 self.check_hourly_summary()
+                
+                # Check pomodoro timer
+                self.check_pomodoro_timer()
 
                 self.debug_log(f"Waiting {self.interval} seconds until next check...")
+                print(f"\n⏳ Next check in {self.interval} seconds...\n" + "-"*50)
                 self.wait_with_input_check(self.interval)
             except KeyboardInterrupt:
                 print("\nProductivityGuard stopped.")
