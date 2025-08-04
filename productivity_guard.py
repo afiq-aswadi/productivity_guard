@@ -986,6 +986,9 @@ Recent Activity Log:
         self.workday_active = False
         self.generate_workday_summary()
         
+        # Ask for todos for next session
+        self.collect_next_session_todos()
+        
         # Stop monitoring
         self.stop_monitoring = True
         
@@ -1269,6 +1272,10 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
         today = datetime.now().strftime('%Y-%m-%d')
         self.daily_todo_file = os.path.join(self.data_dir, f'{today}_daily_todos.json')
         
+        # Initialize empty todo list
+        self.daily_todos = []
+        self.todo_counter = 1
+        
         # Load existing todos if file exists
         if os.path.exists(self.daily_todo_file):
             try:
@@ -1277,13 +1284,29 @@ Full summary saved to: `{os.path.basename(self.daily_summary_file)}`
                     self.daily_todos = data.get('todos', [])
                     self.todo_counter = data.get('next_id', 1)
                 self.debug_log(f"Loaded {len(self.daily_todos)} existing todos")
+                
+                # Load next session todos if any (for continuing same day)
+                next_session_todos = self.load_next_session_todos()
+                if next_session_todos:
+                    self.save_todos()  # Save updated todos with next session items
+                    
             except Exception as e:
                 self.debug_log(f"Error loading todos: {e}")
                 self.daily_todos = []
                 self.todo_counter = 1
         else:
-            # Ask user for initial todos
+            # New day - offer to import previous day todos first
+            self.offer_previous_day_import()
+            
+            # Load next session todos if any
+            next_session_todos = self.load_next_session_todos()
+            
+            # Ask user for additional todos
             self.collect_daily_todos()
+            
+            # Save all todos after collection
+            if self.daily_todos or next_session_todos:
+                self.save_todos()
 
     def collect_daily_todos(self):
         """Collect daily todos from user at program start."""
@@ -1460,6 +1483,164 @@ Only suggest obvious completions or important additions. Be conservative.
 
         except Exception as e:
             self.debug_log(f"Error generating todo suggestions: {e}")
+
+    def collect_next_session_todos(self):
+        """Collect todos for the next session when ending workday."""
+        if self.test_mode:
+            return  # Skip in test mode
+            
+        print("\n" + "="*60)
+        print("📝 NEXT SESSION TODOS")
+        print("="*60)
+        print("Is there anything you'd like to add to your todos for the next session?")
+        print("(These will be available when you start ProductivityGuard again)")
+        print("Enter todo items one by one. Press Enter with empty input when done.")
+        print("-" * 60)
+        
+        next_session_todos = []
+        while True:
+            try:
+                item = input(f"Next session todo #{len(next_session_todos) + 1}: ").strip()
+                if not item:
+                    break
+                next_session_todos.append(item)
+                print(f"✅ Added: {item}")
+            except (EOFError, KeyboardInterrupt):
+                break
+        
+        if next_session_todos:
+            self.save_next_session_todos(next_session_todos)
+            print(f"\n✅ Saved {len(next_session_todos)} todos for next session!")
+        else:
+            print("\n📝 No next session todos added.")
+        
+        print("=" * 60)
+
+    def save_next_session_todos(self, todos):
+        """Save next session todos to a file."""
+        try:
+            next_session_file = os.path.join(self.data_dir, 'next_session_todos.json')
+            data = {
+                "created_at": datetime.now().isoformat(),
+                "todos": todos
+            }
+            with open(next_session_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            self.debug_log(f"Saved {len(todos)} next session todos")
+        except Exception as e:
+            self.debug_log(f"Error saving next session todos: {e}")
+
+    def load_next_session_todos(self):
+        """Load and integrate next session todos if they exist."""
+        next_session_file = os.path.join(self.data_dir, 'next_session_todos.json')
+        
+        if not os.path.exists(next_session_file):
+            return []
+            
+        try:
+            with open(next_session_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                todos = data.get('todos', [])
+                
+            if todos:
+                print(f"\n📥 Found {len(todos)} todos from previous session:")
+                for i, todo in enumerate(todos, 1):
+                    print(f"  {i}. {todo}")
+                
+                # Add them to current todos
+                for todo_text in todos:
+                    todo = {
+                        "id": self.todo_counter,
+                        "text": todo_text,
+                        "completed": False,
+                        "created_at": datetime.now().isoformat(),
+                        "from_previous_session": True
+                    }
+                    self.daily_todos.append(todo)
+                    self.todo_counter += 1
+                
+                # Remove the next session file after loading
+                os.remove(next_session_file)
+                print(f"✅ Added {len(todos)} todos from previous session!")
+                
+                return todos
+        except Exception as e:
+            self.debug_log(f"Error loading next session todos: {e}")
+            
+        return []
+
+    def get_previous_day_todos(self):
+        """Get undone todos from the previous day."""
+        try:
+            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            yesterday_file = os.path.join(self.data_dir, f'{yesterday}_daily_todos.json')
+            
+            if not os.path.exists(yesterday_file):
+                return []
+                
+            with open(yesterday_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                todos = data.get('todos', [])
+                
+            # Filter for uncompleted todos
+            undone_todos = [todo for todo in todos if not todo.get('completed', False)]
+            return undone_todos
+            
+        except Exception as e:
+            self.debug_log(f"Error getting previous day todos: {e}")
+            return []
+
+    def offer_previous_day_import(self):
+        """Offer to import undone todos from previous day."""
+        if self.test_mode:
+            return  # Skip in test mode
+            
+        previous_todos = self.get_previous_day_todos()
+        
+        if not previous_todos:
+            return
+            
+        print("\n" + "="*60)
+        print("📅 PREVIOUS DAY TODOS")
+        print("="*60)
+        print(f"Found {len(previous_todos)} undone todos from yesterday:")
+        
+        for i, todo in enumerate(previous_todos, 1):
+            print(f"  {i}. {todo['text']}")
+        
+        print("-" * 60)
+        
+        while True:
+            try:
+                choice = input("Would you like to import these todos for today? (y/n): ").strip().lower()
+                if choice in ['y', 'yes']:
+                    # Import all undone todos
+                    imported_count = 0
+                    for todo in previous_todos:
+                        new_todo = {
+                            "id": self.todo_counter,
+                            "text": todo['text'],
+                            "completed": False,
+                            "created_at": datetime.now().isoformat(),
+                            "imported_from_previous_day": True,
+                            "original_date": todo.get('created_at', 'unknown')
+                        }
+                        self.daily_todos.append(new_todo)
+                        self.todo_counter += 1
+                        imported_count += 1
+                    
+                    print(f"✅ Imported {imported_count} todos from yesterday!")
+                    break
+                elif choice in ['n', 'no']:
+                    print("📝 Skipped importing previous day todos.")
+                    break
+                else:
+                    print("Please enter 'y' for yes or 'n' for no.")
+            except (EOFError, KeyboardInterrupt):
+                print("\n📝 Skipped importing previous day todos.")
+                break
+        
+        print("=" * 60)
 
     def bring_terminal_to_front(self):
         """Bring the terminal window to front and play notification sound."""
