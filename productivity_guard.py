@@ -187,6 +187,12 @@ class ProductivityGuard:
         self.pomodoro_start_time = None
         self.pomodoro_duration = 0
         
+        # Break state
+        self.on_break = False
+        self.break_start_time = None
+        self.break_duration = 0
+        self.break_activity = ""
+        
         # Initialize OCR reader if available
         self.ocr_reader = None
         if OCR_AVAILABLE:
@@ -320,6 +326,142 @@ class ProductivityGuard:
         else:
             # Timer has finished but hasn't been processed yet
             self.check_pomodoro_timer()
+
+    def start_break(self, minutes):
+        """Start a break for the specified number of minutes."""
+        if self.on_break:
+            print("☕ You're already on a break!")
+            self.show_break_status()
+            return
+        
+        # Get break activity from user
+        print(f"\n☕ Starting a {minutes}-minute break!")
+        print("What would you like to do during your break?")
+        break_activity = input("Break activity: ").strip()
+        
+        if not break_activity:
+            break_activity = "take a break"
+        
+        self.on_break = True
+        self.break_start_time = datetime.now()
+        self.break_duration = minutes * 60  # Convert to seconds
+        self.break_activity = break_activity
+        
+        print(f"\n🛑 BREAK MODE ACTIVATED!")
+        print(f"☕ Activity: {break_activity}")
+        print(f"⏰ Duration: {minutes} minutes")
+        print(f"🎯 Break ends at {(self.break_start_time + timedelta(seconds=self.break_duration)).strftime('%H:%M')}")
+        print("📸 Screenshot monitoring is PAUSED")
+        print("💡 Type 'break' to check remaining time")
+        print("=" * 50)
+        
+        # Get AI advice for the break activity
+        self.get_break_advice(break_activity, minutes)
+        
+        # Log the break start
+        self.log_activity_to_file("BREAKS", f"Started {minutes}-minute break: {break_activity}")
+
+    def get_break_advice(self, break_activity, duration_minutes):
+        """Get AI advice for the break activity using Gemini."""
+        try:
+            # Load the break advice prompt
+            prompt_path = os.path.join("prompts", "break_advice_prompt.md")
+            if os.path.exists(prompt_path):
+                with open(prompt_path, 'r') as f:
+                    prompt_template = f.read()
+                
+                # Format the prompt with the break activity and duration
+                prompt = prompt_template.format(
+                    break_activity=break_activity,
+                    break_duration=duration_minutes
+                )
+                
+                # Make API call to get advice
+                response = self.call_openrouter_api(prompt, use_best_model=False)
+                
+                if response and response.strip():
+                    print(f"\n💡 AI Break Coach says:")
+                    print(f"   {response.strip()}")
+                    print()
+                else:
+                    print(f"\n💡 Enjoy your {break_activity} break!")
+                    print()
+            else:
+                print(f"\n💡 Enjoy your {break_activity} break!")
+                print()
+                
+        except Exception as e:
+            self.debug_log(f"Error getting break advice: {e}")
+            print(f"\n💡 Enjoy your {break_activity} break!")
+            print()
+
+    def check_break_timer(self):
+        """Check if break timer has finished and show alerts."""
+        if not self.on_break:
+            return
+        
+        current_time = datetime.now()
+        elapsed_seconds = (current_time - self.break_start_time).total_seconds()
+        
+        if elapsed_seconds >= self.break_duration:
+            # Break finished!
+            self.on_break = False
+            minutes = self.break_duration // 60
+            
+            print("\n" + "=" * 60)
+            print("⏰ BREAK TIME IS OVER! ⏰")
+            print(f"✅ You took a {minutes}-minute break: {self.break_activity}")
+            print("🔋 Hope you're feeling refreshed!")
+            print("📸 Screenshot monitoring is now RESUMED")
+            print("=" * 60)
+            
+            # Play notification sound if not disabled
+            if not self.disable_sound and sys.platform == 'darwin':
+                for _ in range(2):
+                    subprocess.run(['afplay', '/System/Library/Sounds/Ping.aiff'], check=False)
+                    time.sleep(0.5)
+            
+            # Log completion
+            self.log_activity_to_file("PLANNING", f"Break ended - resumed work after {minutes} minutes")
+            
+            # Reset break activity
+            self.break_activity = ""
+            
+            return True  # Return True to indicate break completed
+        
+        return False  # Return False to indicate break still active
+
+    def show_break_status(self):
+        """Show current break status."""
+        if not self.on_break:
+            print("☕ No active break.")
+            return
+        
+        current_time = datetime.now()
+        elapsed_seconds = (current_time - self.break_start_time).total_seconds()
+        remaining_seconds = max(0, self.break_duration - elapsed_seconds)
+        
+        if remaining_seconds > 0:
+            remaining_minutes = int(remaining_seconds // 60)
+            remaining_secs = int(remaining_seconds % 60)
+            total_minutes = int(self.break_duration // 60)
+            elapsed_minutes = int(elapsed_seconds // 60)
+            
+            print(f"\n☕ BREAK MODE ACTIVE")
+            print(f"🎯 Activity: {self.break_activity}")
+            print(f"⏰ Time remaining: {remaining_minutes:02d}:{remaining_secs:02d}")
+            print(f"📊 Progress: {elapsed_minutes}/{total_minutes} minutes")
+            print(f"📸 Screenshot monitoring is PAUSED")
+            
+            # Show simple progress bar
+            progress = elapsed_seconds / self.break_duration
+            bar_length = 20
+            filled_length = int(bar_length * progress)
+            bar = "☕" * filled_length + "░" * (bar_length - filled_length)
+            print(f"🔋 [{bar}] {progress*100:.1f}%")
+        else:
+            # Break has finished but hasn't been processed yet
+            self.check_break_timer()
 
     def save_debug_screenshot(self, img, monitor_index):
         """Save the last 3 screenshots for each monitor in debug mode."""
@@ -2005,6 +2147,10 @@ Only suggest obvious completions or important additions. Be conservative.
                         self.input_queue.put(user_input)
                     elif user_input.lower() in ["pomodoro", "timer", "timer status"]:
                         self.input_queue.put("pomodoro_status")
+                    elif user_input.lower().startswith("break "):
+                        self.input_queue.put(user_input)
+                    elif user_input.lower() in ["break", "break status"]:
+                        self.input_queue.put("break_status")
                     else:
                         # For other inputs during monitoring, just put in queue
                         self.input_queue.put(user_input)
@@ -2074,12 +2220,30 @@ Only suggest obvious completions or important additions. Be conservative.
                 
                 elif user_input == "pomodoro_status":
                     self.show_pomodoro_status()
+                
+                # Handle break commands
+                elif user_input.lower().startswith("break "):
+                    try:
+                        minutes = int(user_input[6:].strip())
+                        if 1 <= minutes <= 240:  # Reasonable limit (up to 4 hours)
+                            self.start_break(minutes)
+                        else:
+                            print("❌ Please enter a break time between 1 and 240 minutes")
+                    except ValueError:
+                        print("❌ Invalid time format. Use 'break [minutes]' (e.g., 'break 15')")
+                
+                elif user_input == "break_status":
+                    self.show_break_status()
 
             except queue.Empty:
                 # No input received, continue waiting
                 # Check pomodoro timer every 0.5 seconds for responsive completion notifications
                 if self.pomodoro_active:
                     self.check_pomodoro_timer()
+                
+                # Check break timer every 0.5 seconds for responsive completion notifications
+                if self.on_break:
+                    self.check_break_timer()
                 pass
             except Exception as e:
                 self.debug_log(f"Error processing input: {e}")
@@ -2115,6 +2279,8 @@ Only suggest obvious completions or important additions. Be conservative.
         print("  add <text> - Add new todo (e.g., 'add Review code')")
         print("  pomodoro <minutes> - Start a Pomodoro timer (e.g., 'pomodoro 25')")
         print("  pomodoro/timer - Check current timer status")
+        print("  break <minutes> - Take a break and pause monitoring (e.g., 'break 15')")
+        print("  break - Check current break status")
         print("  end/finish/'end workday' - End workday and get full summary")
         if self.debug:
             print("\nRunning in DEBUG mode - detailed logging enabled")
@@ -2135,6 +2301,13 @@ Only suggest obvious completions or important additions. Be conservative.
         while not self.stop_monitoring and self.workday_active:
             try:
                 self.debug_log("\n--- Starting new check ---")
+                
+                # Skip screenshot taking and processing if on break
+                if self.on_break:
+                    self.debug_log("On break - skipping screenshot and analysis")
+                    self.wait_with_input_check(self.interval)
+                    continue
+                
                 if self.test_mode:
                     screenshots, extracted_texts = [], []  # No actual screenshots in test mode
                 else:
